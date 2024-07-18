@@ -31,6 +31,7 @@ import git
 import datetime
 import jira
 import gitlab
+import re
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
@@ -85,10 +86,40 @@ errata_map = {}
 release_id_map = {}
 config = {}
 
+#
+# Misc
+#
+
+def confirm(msg=None):
+    if msg:
+        print(msg)
+    prompt="Do you want to continue? Press Enter to proceed or 'N' to cancel: "
+    while True:
+        response = input(prompt).strip().lower()
+        if response == 'n':
+            print("Operation cancelled.")
+            return False
+        elif response == '':
+            print("Proceeding...")
+            return True
+        else:
+            print("Invalid input. Please press Enter to proceed or 'N' to cancel.")
+
+#
+#
+#
+
+def centos_release(release):
+    version = release_get_major(release);
+    return "c"+version+"s"
+
 # handle package location differences for rhel9 centos stream
 def get_git_packages_dir(distro,package,release) :
+    #if not get_need_zstream_clone(release):
+    #    release = "rhel-"+bug_version_map(release)
+
     if distro == 'centos' :
-        return packages_dir[distro]+"-fork/%s"%package;
+        return packages_dir[distro]+"-fork/%s/%s"%(package,centos_release(release));
     return packages_dir[distro]+"%s/%s"%(package,release)
 
 def get_build_packages_dir(distro,package,release) :
@@ -101,6 +132,9 @@ def get_build_packages_dir(distro,package,release) :
 #
 def get_need_zstream_clone(release) :
     return not release in ga_list
+
+def sanitize_version(version):
+    return re.sub(r'rhel-(\d+)\.(\d+)(?:\.(\d+))?', lambda m: f"rhel-{m.group(1)}.{m.group(2)}.{m.group(3) or '0'}", version)
 
 def bug_version_map(release):
     comp=release.split('-')
@@ -184,6 +218,7 @@ firefox_version=None
 jira_api_key=None
 Jira=None
 GLab=None
+glab_api_key=None
 CentOSFork=None
 centos_fork=None
 
@@ -238,7 +273,7 @@ def get_ga_list() :
             last_major = current_major
         last_ga=release
     if (last_ga != None) :
-        l_ga_list.append(last_ga)
+        l_ga_list.append(sanitize_version(last_ga))
     return l_ga_list
 
 #
@@ -250,6 +285,8 @@ def get_ga_list() :
 # create a new issue and return the issue number and issue reference
 def issue_create(jira, release, version, nss_version, firefox_version, packages):
     package = packages.split(',')[0]
+
+    release = "rhel-"+bug_version_map(release)
 
     issue_metadata = {
         'project': {'key': JIRA_PROJ},
@@ -275,6 +312,9 @@ def issue_lookup(jira, release, version, packages, zstream=False):
     package = packages.split(',')[0]
     summary=bug_summary_short%year
 
+    if not get_need_zstream_clone(release):
+        release = "rhel-"+bug_version_map(release)
+
     if zstream :
         release += ".z"
 
@@ -284,16 +324,17 @@ def issue_lookup(jira, release, version, packages, zstream=False):
                  f'summary~"{summary}" AND '
                  f'fixVersion={release}')
 
+    issues = None
     try:
         issues = jira.search_issues(jql_query)
     except JIRAError as e:
         print(e)
 
-    if len(issues) != 1:
-        print(f'Found {len(issues)} issues matching {summary}')
+    if issues is None or len(issues) < 1:
+        print(f'Issue not found')
         return "0", None
 
-    return issues[0].key, issues[0];
+    return issues[-1].key, issues[-1];
 
 def issue_request_clone(jira, release, version, packages):
     package = packages.split(',')[0]
@@ -341,6 +382,7 @@ def issue_get(jira,bugnumber):
 # create a new errata and attack the bug returns the errata number
 def errata_create(release, version, firefox_version, packages, year, bugnumber) :
     release_name=release_map(release)
+    print(release_name)
     if release_name == None :
         print("Can'd find product version for release %s, skipping errata create"%release)
         return 0
@@ -382,6 +424,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
     if r.status_code <= 299 :
+        print(f"Errata couldn't be created code: {r.status_code}")
         return r.json()['errata']['rhba']['id']
     print('errata create status=%d'%r.status_code)
     print('returned text=',r.text)
@@ -891,10 +934,10 @@ def git_pull(gitdir):
 #    GitLab
 #
 
-def gitlab_src_from_fork(repo_fork):
+def gitlab_src_from_fork(project):
     if project.forked_from_project:
         source_project_id = project.forked_from_project['id']
-        source_project = gl.projects.get(source_project_id)
+        source_project = GLab.projects.get(source_project_id)
         print(f"Source Project: {source_project.web_url}")
         return source_project
     else:
@@ -906,7 +949,7 @@ def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
         'source_branch': branch,
         'target_branch': branch,
         'target_project_id' : repo_target.id,
-        'assignee_id' : GITLAB.user.id,
+        'assignee_id' : GLab.user.id,
         'title': (bug_summary_short % year),
         'description' : ("Resolves: %s\n\n" % bugnumber),
     }
@@ -1204,7 +1247,10 @@ if glab_api_key != None:
         print(e);
 
 if GLab != None and centos_fork != None:
-    CentOSFork = GITLAB.projects.get(centos_fork.replace(glab_url_base, ""))
+    CentOSFork = GLab.projects.get(centos_fork.replace(glab_url_base, ""))
+else:
+    CentOSFork = None
+    print("No CentOS fork found")
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
@@ -1295,7 +1341,11 @@ for release in rhel_packages:
     else :
         distro='rhel'
     entry=rhel_packages[release]
+
     print("Processing release <%s>:"%release)
+    if not confirm():
+        continue;
+
     if entry['state'] == 'complete' :
         print("  * complete!")
         continue
@@ -1318,7 +1368,9 @@ for release in rhel_packages:
             bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
-                bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
+                print(bug_summary%(year,version,nss_version,firefox_version,release));
+                if confirm():
+                    bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
 
                 if bugnumber == "0":
                     entry['state']='need bug'
@@ -1328,6 +1380,7 @@ for release in rhel_packages:
                 issue_request_clone(Jira, release, version, packages)
 
             entry['bugnumber']=bugnumber
+
     print("      * bug=%s"%bugnumber)
     if issue == None :
         issue = issue_get(Jira,bugnumber)
@@ -1348,16 +1401,19 @@ for release in rhel_packages:
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
               # handle centos pull request here
               if (distro == "centos") :
-                    mr = gitlab_find_mr(gitlab_src_from_fork(CentOSFork), 'main',
+                    mr = gitlab_find_mr(gitlab_src_from_fork(CentOSFork), centos_release(release),
                                         CentOSFork.id)
                     if (mr == None):
-                        gitlab_create_mr(CentOSFork, gitlab_src_from_fork(CentOSFork),
-                                              bugnumber, branch='main')
+                        if confirm(f'Create Gitlab MR for {centos_release(release)}'):
+                            gitlab_create_mr(CentOSFork, gitlab_src_from_fork(CentOSFork),
+                                                  bugnumber, centos_release(release))
+                        all_builds_pushed=False
                     elif (mr.state == "merged"):
                         git_pull(get_build_packages_dir(distro, package, release))
                     else:
                         print(f"Merge request status: {mr.state}");
                         entry['state'] = 'waiting centos merge'
+                        all_builds_pushed=False
                         continue
 
               nvr = build(release,package)
@@ -1396,21 +1452,24 @@ for release in rhel_packages:
     # once the builds are complete, put the bug in modified state
     bug_resync = False
     if bug_state == 'NEW' :
-        bug_state = issue_change_state(Jira, issue, 'ASSIGNED')
-    if all_builds_pushed and (bug_state == 'NEW' or bug_state == 'ASSIGNED') :
-        bug_state = issue_change_state(Jira, issue, 'MODIFIED')
+        bug_state = issue_change_state(Jira, issue, 'PLANNING')
+    if all_builds_pushed and bug_state == 'Planning' :
+        bug_state = issue_change_state(Jira, issue, 'IN PROGRESS')
         bug_resync = True
+
+    print(bug_state)
     # and once our bug is modified, we can create the errata
     if erratanumber == 0 :
         erratanumber = errata_lookup(release, version, firefox_version, packages)
-    if erratanumber == 0 and bug_state == 'MODIFIED' :
+    if erratanumber == 0 and bug_state == 'In Progress' :
         print("      * creating new errata")
-        erratanumber = errata_create(release, version, firefox_version, packages, year, bugnumber)
+        if confirm():
+            erratanumber = errata_create(release, version, firefox_version, packages, year, bugnumber)
     if erratanumber != 0 :
         print("      * errata=%d"%erratanumber)
         entry['erratanumber'] = erratanumber
     # finally, once we have our errata and builds, attach them
-    if erratanumber != 0 and (bug_state == 'MODIFIED' or bug_state == 'ON_QA') :
+    if erratanumber != 0 and (bug_state == 'IN PROGRESS' or bug_state == 'INTEGRATION') :
         if not errata_has_bug(erratanumber,bugnumber) :
             print("      * adding bug %s to  errata"%bugnumber)
             errata_add_bug(erratanumber, bugnumber, bug_resync)
@@ -1531,7 +1590,7 @@ for release in rhel_packages :
     packages=entry['packages']
     print("%s: state='%s' bug=%s errata=%d"%(release,entry['state'],bugnumber,erratanumber))
     if bugnumber != "0":
-        print("    %s/show_bug.cgi?id=%s"%(Jira_url_base,bugnumber))
+        print("    %s/show_bug.cgi?id=%s"%(jira_url_base,bugnumber))
     if erratanumber != "0":
         print("    %s/advisory/%d"%(errata_url_base,erratanumber))
     for package in packages.split(',') :

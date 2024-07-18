@@ -12,6 +12,7 @@ PACKAGES=${SCRIPT_LOC}/packages
 MODIFIED=${SCRIPT_LOC}/modified
 SCRATCH=${SCRIPT_LOC}/scratch.$$
 META_DATA=${SCRIPT_LOC}/meta
+PATCHES=${SCRIPT_LOC}/patches
 baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/security/nss/lib"
 release_type="RTM"
 release="3_67"
@@ -386,10 +387,10 @@ cacertificates_update()
 	echo "!!!Skipping ca-certificates build for ${RELEASE}. no certdata.txt generated"
         return 1
    fi
-   if [ ! -d ${CACERTSPACKAGEDIR} ]; then
-	echo "!!!Skipping ca-certificates build for ${RELEASE}. no git repository found"
-        return 1
-   fi
+   #if [ ! -d ${CACERTSPACKAGEDIR} ]; then
+#	echo "!!!Skipping ca-certificates build for ${RELEASE}. no git repository found"
+ #       return 1
+  # fi
    if  echo ${CURRENT_RELEASES} | grep $RELEASE ; then
       restart_release=${RESTART_RELEASE_BASE}
    else
@@ -398,6 +399,11 @@ cacertificates_update()
    mkdir -p ${SCRATCH}
    # analyze ca certificate differences
    cd ${CACERTSPACKAGEDIR}
+   # apply any patches
+   #for file in ${PATCHES}/*; do
+   #    git am ${file} --ignore-space-change --ignore-whitespace
+   #done
+
    ${SCRIPT_LOC}/check_certs.sh certdata.txt ${CERTDATA} > ${SCRATCH}/cert_log
    diff certdata.txt ${CERTDATA} > /dev/null
    if [ $? -eq 0 ]; then
@@ -469,6 +475,7 @@ while [ -n "$1" ]; do
     rhel-6*) RHEL6="${RHEL6} $1"; RHEL_NSS=1; RHEL_CACERTS=1;;
     rhel-8*) RHEL8="${RHEL8} $1"; RHEL_CACERTS=1;;
     rhel-9*) RHEL9="${RHEL9} $1"; RHEL_CACERTS=1;;
+    rhel-10*) RHEL10="${RHEL10} $1"; RHEL_CACERTS=1;;
     rhel-7*) if [ $1 \< "rhel-7.5" ]; then
 	       RHEL7o="${RHEL7o} $1"
 	    fi
@@ -495,6 +502,7 @@ while [ -n "$1" ]; do
     shift
 done
 
+CENTOS_LIST=()
 # reset the directory structure
 echo "******************************************************************"
 echo "*                   Setting up directories                       *"
@@ -516,8 +524,11 @@ if [ -n "${RHEL8}" ]; then
 fi
 if [ -n "${RHEL9}" ]; then
     mkdir -p ${MODIFIED}/rhel9/ca-certificates
-    mkdir -p ${PACKAGES}/centos
-    mkdir -p ${PACKAGES}/centos-fork
+    CENTOS_LIST+=( "9" )
+fi
+if [ -n "${RHEL10}" ]; then
+    mkdir -p ${MODIFIED}/rhel10/ca-certificates
+    CENTOS_LIST+=( "10" )
 fi
 if [ -n "${RHEL6}" ]; then
     mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
@@ -533,6 +544,11 @@ if [ -n "${FEDORA}" ]; then
 fi
 touch ${RHEL_LIST}
 touch ${FEDORA_LIST}
+
+if [[ ${#CENTOS_LIST[@]} -gt 0 ]]; then
+    mkdir -p ${PACKAGES}/centos
+    mkdir -p ${PACKAGES}/centos-fork/ca-certificates
+fi
 
 #fetch everthing we need. First certdata and nssckbi
 echo "******************************************************************"
@@ -614,33 +630,48 @@ cd ${PACKAGES}
 if [ ${RHEL_CACERTS} -eq 1 ]; then
     echo ">> fetching rhel ca-certificates"
     rhpkg -q clone -B ca-certificates
-    if [ -n "${RHEL9}" ]; then
-        # RHEL-9 tip needs to be checked into centos stream c9s, which uses
-        # pull requests from the for.
-        echo ">> fetching centos ca-certificates"
-        # first fetch the centos stream directory
-        cd centos
-        echo centpkg clone -a rpms/ca-certificates
-        centpkg clone -a rpms/ca-certificates
-        cd ca-certificates
-        # save the URL
+    echo ">> fetching centos ca-certificates"
+
+    # first fetch the centos stream directory
+    pushd centos
+
+        centpkg -q clone -B ca-certificates
+
+        # Fetch upstream git url
+        pushd ca-certificates/c8s
         CA_UPSTREAM=$(git config --get remote.origin.url)
-        # now fetch the fork
-        cd ${PACKAGES}/centos-fork
-        echo "Cloning fork, CA_UPSTREAM=${CA_UPSTREAM} CENTOS_CACERTS_FORK=${CENTOS_CACERTS_FORK}"
-        git clone ${CENTOS_CACERTS_FORK}
-        cd ca-certificates
-        # make sure the fork is up to date
-        git remote add upstream ${CA_UPSTREAM}
-        git checkout c9s
-        git fetch upstream
-        git pull  upstream c9s
-        git push origin c9s
-        # create the branch for the pull request
-        git checkout -b ca-certificates-update-${ckbi_version} origin/c9s
-        cd ${PACKAGES}
-    fi
+        popd
+
+    popd
+    # now fetch the centos fork
+    echo "Cloning fork, CA_UPSTREAM=${CA_UPSTREAM} CENTOS_CACERTS_FORK=${CENTOS_CACERTS_FORK}"
+    pushd centos-fork/ca-certificates/
+    for version in "${CENTOS_LIST[@]}"; do
+        BRANCH_NAME="c${version}s"
+
+        echo "Cloning ${BRANCH_NAME} from ${CENTOS_CACERTS_FORK}"
+        git clone -c url."git@gitlab.com:".insteadOf="https://gitlab.com/" ${CENTOS_CACERTS_FORK} -b ${BRANCH_NAME} ${BRANCH_NAME}
+
+        if [ ! -d "$BRANCH_NAME" ]; then
+            continue
+            echo "Folder $BRANCH_NAME not found"
+        fi
+
+        pushd ${BRANCH_NAME}
+            # make sure the fork is up to date
+            git remote add upstream ${CA_UPSTREAM}
+            git fetch upstream
+            git pull upstream ${BRANCH_NAME}
+            git push origin ${BRANCH_NAME}
+
+            # create the branch for the pull request
+            git checkout -b ${BRANCH_NAME} origin/${BRANCH_NAME}
+            git branch -u upstream/${BRANCH_NAME}
+        popd
+    done
+    popd
 fi
+
 if [ ${RHEL_NSS} -eq 1 ]; then
     echo ">> fetching rhel nss"
     rhpkg -q clone -B nss
@@ -663,6 +694,10 @@ echo "******************************************************************"
 if [ -n "${FEDORA}" ]; then
      echo " - Creating FEDORA certdata.txt fedora=${FEDORA} "
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/fedora/ca-certificates/certdata.txt
+fi
+if [ -n "${RHEL10}" ]; then
+     echo " - Creating RHEL 10 certdata.txt rhel10=${RHEL10} "
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel10/ca-certificates/certdata.txt
 fi
 if [ -n "${RHEL9}" ]; then
      echo " - Creating RHEL 9 certdata.txt rhel9=${RHEL9} "
@@ -749,11 +784,20 @@ for i in ${RHEL9}
 do
    echo "********************** ca-certificates $i *************************"
    if  echo ${CURRENT_RELEASES} | grep $i ; then
-      cacertificates_update ${PACKAGES}/centos-fork/ca-certificates ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
+      cacertificates_update ${PACKAGES}/centos-fork/ca-certificates/c9s ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
    else
       echo "CURRENT_RELEASES=\"${CURRENT_RELEASES}\" THIS_RELEASE=$i"
       cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
    fi
+   errors=$(expr $errors + $?)
+   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+done
+for i in ${RHEL10}
+do
+   echo "********************** ca-certificates $i *************************"
+   #if  echo ${CURRENT_RELEASES} | grep $i ; then
+      cacertificates_update ${PACKAGES}/centos-fork/ca-certificates/c10s ${MODIFIED}/rhel10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "100.0" "101"
+   #fi
    errors=$(expr $errors + $?)
    echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
 done
