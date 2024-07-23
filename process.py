@@ -862,10 +862,11 @@ def git_checkin(release, package, bugnumber):
         index.add([cfile.b_path])
     # now build the log message.
     f=open("%s/%s"%(gitdir,checkin_log),"r")
-    message=f.read()
+    headline = f.readline() + '\n'
+    message = f.read()
     f.close()
     if bugnumber != "-1" :
-        message="Resolves: %s\n\n"%bugnumber + message
+        message = heading + "Resolves: %s\n\n"%bugnumber + message
     #do the checkin
     print("checking in:",gitdir)
     index.commit(message)
