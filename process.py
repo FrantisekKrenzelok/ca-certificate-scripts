@@ -40,6 +40,7 @@ rhel_list='./meta/rhel.list'
 fedora_list='./meta/fedora.list'
 ckbiver_file='./meta/ckbiversion.txt'
 nssver_file='./meta/nssversion.txt'
+mcsver_file='./meta/mcsversion.txt'
 firefox_info='./meta/firefox_info.txt'
 config_file='./config.cfg'
 release_id_file='./release_id'
@@ -51,8 +52,8 @@ jira_url_base='https://issues.redhat.com'
 glab_url_base='https://gitlab.com/'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
-bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
-bug_description='Update CA certificates to version %s from NSS %s for our annual CA certficate update.'
+bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s and Microsoft %s [%s]'
+bug_description='Update CA certificates to version %s from NSS %s and Microsoft %s for our annual CA certficate update.'
 distro=None
 
 # Jira
@@ -248,14 +249,14 @@ def get_ga_list() :
 # see. issue_change_state
 
 # create a new issue and return the issue number and issue reference
-def issue_create(jira, release, version, nss_version, firefox_version, packages):
+def issue_create(jira, release, version, nss_version, firefox_version, mcs_version, packages):
     package = packages.split(',')[0]
 
     issue_metadata = {
         'project': {'key': JIRA_PROJ},
         'issuetype': {'name': JIRA_ISSUE_TYPE},
-        'summary': bug_summary%(year,version,nss_version,firefox_version,release),
-        'description': bug_description%(version,nss_version),
+        'summary': bug_summary%(year,version,nss_version,firefox_version,mcs_version,release),
+        'description': bug_description%(version,nss_version, mcs_version),
         'fixVersions' : [{'name': release}],
         'components': [{'name': package}],
         'priority': {'name': 'Minor'},
@@ -1113,6 +1114,13 @@ try:
 except :
     nss_version=None
 
+try:
+    f = open(mcsver_file, "r")
+    mcs_version=f.read().strip()
+    f.close()
+except :
+    mcs_version=None
+
 has_firefox_version=True
 try:
     f = open(firefox_info, "r")
@@ -1319,7 +1327,7 @@ for release in rhel_packages:
             bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
-                bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
+                bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,mcs_version,packages)
 
                 if bugnumber == "0":
                     entry['state']='need bug'

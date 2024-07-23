@@ -618,6 +618,7 @@ if [ -f codesign-release.txt ]; then
     fi
 fi
 echo ${nss_version} > ${META_DATA}/nssversion.txt
+echo ${mcs_version} > ${META_DATA}/mcsversion.txt
 echo ${ckbi_version} > ${META_DATA}/ckbiversion.txt
 
 # now fetch the relevant builds
