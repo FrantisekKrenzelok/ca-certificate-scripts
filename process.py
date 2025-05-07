@@ -896,7 +896,7 @@ def git_pull(gitdir):
 def gitlab_src_from_fork(repo_fork):
     if project.forked_from_project:
         source_project_id = project.forked_from_project['id']
-        source_project = gl.projects.get(source_project_id)
+        source_project = GLab.projects.get(source_project_id)
         print(f"Source Project: {source_project.web_url}")
         return source_project
     else:
@@ -908,7 +908,7 @@ def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
         'source_branch': branch,
         'target_branch': branch,
         'target_project_id' : repo_target.id,
-        'assignee_id' : GITLAB.user.id,
+        'assignee_id' : GLab.user.id,
         'title': (bug_summary_short % year),
         'description' : ("Resolves: %s\n\n" % bugnumber),
     }
@@ -1213,7 +1213,7 @@ if glab_api_key != None:
         print(e);
 
 if GLab != None and centos_fork != None:
-    CentOSFork = GITLAB.projects.get(centos_fork.replace(glab_url_base, ""))
+    CentOSFork = GLab.projects.get(centos_fork.replace(glab_url_base, ""))
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
@@ -1540,7 +1540,7 @@ for release in rhel_packages :
     packages=entry['packages']
     print("%s: state='%s' bug=%s errata=%d"%(release,entry['state'],bugnumber,erratanumber))
     if bugnumber != "0":
-        print("    %s/show_bug.cgi?id=%s"%(Jira_url_base,bugnumber))
+        print("    %s/show_bug.cgi?id=%s"%(jira_url_base,bugnumber))
     if erratanumber != "0":
         print("    %s/advisory/%d"%(errata_url_base,erratanumber))
     for package in packages.split(',') :
