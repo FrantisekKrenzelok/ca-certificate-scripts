@@ -83,7 +83,6 @@ package_tool = {
 
 ga_list = []
 errata_map = {}
-release_id_map = {}
 config = {}
 
 # handle package location differences for rhel9 centos stream
@@ -157,19 +156,15 @@ def numeric_release_map(release) :
        return 0
     return errata_map[release]['id']
 
-
 def release_description_map(release):
     if not release in errata_map:
        return None
     return errata_map[release]['description']
 
-def release_ids_map(release) :
-    mapped_release = release_map(release)
-    if mapped_release == None:
+def release_get_release_id(release):
+    if not release in errata_map:
        return None
-    if not mapped_release in release_id_map:
-       return None
-    return release_id_map[mapped_release]
+    return errata_map[release]['release_id']
 
 package_description_map= {
     "ca-certificates":"The ca-certificates package contains a set of Certificate Authority (CA) certificates chosen by the Mozilla Foundation for use with the Internet Public Key Infrastructure (PKI).",
@@ -374,7 +369,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     errata= {}
     errata['product']='RHEL'
     errata['release']=release_name
-    errata['release_id']=release_ids_map(release)
+    errata['release_id']=release_get_release_id(release)
     errata['advisory']=advisory
     print("----------Creating errata for "+release.strip())
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -417,7 +412,7 @@ def errata_get_all_pages(url,paste,request_type) :
 def errata_lookup(release, version, firefox_version, packages) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     packages_list=packages.split(',')
-    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%s&synopsis_text=%s"%(release_ids_map(release),packages_list[0])
+    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%s&synopsis_text=%s"%(release_get_release_id(release),packages_list[0])
     url=errata_url_base + search_params
     r = requests.get(url, headers=headers,
                      auth=HTTPKerberosAuth(),
@@ -673,7 +668,31 @@ def errata_get_best_version(version_list, isga) :
             best = version
     return best
 
+def errata_get_release_id():
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    params="/api/v1/releases"
+    url=errata_url_base + params
+
+    errata_ids = {}
+    data = errata_get_all_pages(url,'?',"")
+    if data == None :
+        return None
+
+    for item in data:
+        _id = item.get('id')
+        _name = item.get("attributes").get("name")
+        errata_ids[_name] = _id
+
+    return errata_ids
+
+
 def errata_get_release_info() :
+
+    # fetch release id's for products.
+    # Not to be confuded with product id's
+    errata_release_ids = errata_get_release_id()
+
+    # get releases
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     params="/api/v1/products/16/product_versions"
     url=errata_url_base + params
@@ -687,10 +706,18 @@ def errata_get_release_info() :
     for product_version in data:
         product_version_info = dict()
         attributes = product_version['attributes']
-        product_version_info['name'] = attributes['name']
+        name = attributes['name']
+        product_version_info['name'] = name
         product_version_info['description'] = attributes['description']
         product_version_info['id'] = product_version['id']
+        if name not in errata_release_ids:
+            print("%s not in errata_release_ids"%name)
+            continue
+        product_version_info['release_id'] = errata_release_ids[name]
         brew = attributes['default_brew_tag']
+        if brew == None:
+            print("brew tag is None for %s"%name)
+            continue
         release = errata_candidate_to_release(brew)
         if not release in releases :
                 print("adding release= %s"%release)
@@ -718,7 +745,6 @@ def errata_get_release_info() :
                         product_version_list[release], release == ga)
             print('release=',release,'map=',maps[release])
     return maps
-
 
 def errata_merge_rpm_status(status, status2) :
     # first, state of PASSED has lowest priority
@@ -1156,10 +1182,6 @@ for config_line in open(config_file, 'r'):
        glab_url_base = value.strip()
     if key == 'gitlab_api_key':
        glab_api_key = value.strip()
-
-for release_id in open(release_id_file, 'r'):
-    ( rid, release) = release_id.strip().split(',',2)
-    release_id_map[release]=rid;
 
 for opt, arg in opts:
     if opt == '-r' :
