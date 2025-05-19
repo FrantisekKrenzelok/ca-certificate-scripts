@@ -129,6 +129,11 @@ def safe_int(a) :
        b = 0;
     return b
 
+def release_requires_build(release):
+    if safe_int(release_get_major(release)) < 9 :
+       return True
+    return not get_need_zstream_clone(release)
+
 def release_is_centos_stream(release) :
     if safe_int(release_get_major(release)) < 8 :
        return False
@@ -1420,8 +1425,17 @@ for release in rhel_packages:
                         entry['state'] = 'waiting centos merge'
                         continue
 
-              nvr = build(release,package)
-              entry['nvr'] = add_nvr(nvr,entry['nvr'])
+              # [one build per major release]
+              # build only if release is that lattest z stream or rhel-8 and older
+              if release_requires_build(release):
+                  nvr = build(release,package)
+                  entry['nvr'] = add_nvr(nvr,entry['nvr'])
+
+    if not release_requires_build(release):
+        # [one build per major release]
+        # skip (ASYNC) errata creation if not the lattest z stream (only rhel-9^)
+        continue
+
     builds=entry['nvr']
     erratanumber=entry['erratanumber']
     if distro == 'centos' :
