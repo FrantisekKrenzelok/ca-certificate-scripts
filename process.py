@@ -1230,13 +1230,31 @@ if  qe != None :
     qe_line=', "assign_to_email":"'+qe+'"'
 
 
-if jira_api_key != None:
-    options = {'server': jira_url_base,
-               'verify': True}
+if jira_api_key is not None:
+    base_options = {
+        'server': jira_url_base,
+        'verify': True
+    }
+
+    constructor_args = {
+        'options'   : base_options,
+        'token_auth': jira_api_key,
+    }
+
+    if 'stage' in jira_url_base:
+        print("staging instance")
+        # staging instance requires proxies
+        constructor_args['proxies'] = {
+            'http' : 'http://squid.corp.redhat.com:3128',
+            'https': 'http://squid.corp.redhat.com:3128'
+        }
+
     try:
-        Jira = jira.JIRA(options=options, token_auth=jira_api_key)
+        Jira = jira.JIRA(**constructor_args)
     except JIRAError as e:
-        print(e);
+        print(f"JIRA Error connecting to {jira_url_base}: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred while trying to connect to JIRA at {jira_url_base}: {e}")
 
 if glab_api_key != None:
     try:
