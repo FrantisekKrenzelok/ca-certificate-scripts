@@ -36,6 +36,8 @@ from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
 
 
+DRY_RUN = False # Used alongside staging enviroments for developement
+
 rhel_list='./meta/rhel.list'
 fedora_list='./meta/fedora.list'
 ckbiver_file='./meta/ckbiversion.txt'
@@ -904,6 +906,11 @@ def git_push(release, package, bugnumber):
     gitdir=get_git_packages_dir(distro,package,release)
     repo = git.Repo(gitdir)
     print("repo.remotes.origin", repo.remotes.origin)
+
+    if DRY_RUN :
+        print("DRY_RUN: git would push to %s"%repo.remotes.origin.url)
+        return 'pushed'
+
     if distro == 'centos' :
         repo.remotes.origin.push("HEAD")
     else :
@@ -1182,6 +1189,8 @@ for config_line in open(config_file, 'r'):
        glab_url_base = value.strip()
     if key == 'gitlab_api_key':
        glab_api_key = value.strip()
+    if key == 'dry_run':
+       DRY_RUN = True if value.strip().lower() == 'true' else False
 
 for opt, arg in opts:
     if opt == '-r' :
@@ -1206,6 +1215,8 @@ for opt, arg in opts:
         resync = True
     elif opt == '--get-ga' :
         get_ga = True
+    elif opt == '--dry-run':
+        DRY_RUN = True
     elif opt == '--getconfig' :
         if not arg in config:
             print("No arg found");
