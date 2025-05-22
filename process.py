@@ -931,7 +931,7 @@ def git_pull(gitdir):
 #    GitLab
 #
 
-def gitlab_src_from_fork(repo_fork):
+def gitlab_src_from_fork(project):
     if project.forked_from_project:
         source_project_id = project.forked_from_project['id']
         source_project = GLab.projects.get(source_project_id)
@@ -955,24 +955,14 @@ def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
 
     return mr
 
-def gitlab_find_mr(upstream_project, source_branch, source_project_id):
-    mrs = upstream_project.mergerequests.list()
-    for mr in mrs:
-        if mr.source_branch == source_branch and \
-           mr.source_project_id == source_project_id and \
-           mr.title == (bug_summary_short % year) and \
-           ("Resolves: %s" % bugnumber) in mr.description:
-            return mr
-    return None
+def gitlab_get_mr(project, id):
+    try:
+        mr = project.mergerequests.get(id)
+    except gitlab.exceptions.GitlabGetError as e:
+        print(f'Error getting merge request: {e}')
+        return None
 
-def gitlab_get_mr_status():
-    mr = gitlab_find_mr(upstream_project, source_branch, source_project_id)
-    if mr == None:
-        print("Couldn't find the MR")
-        return "Not found"
-
-    return mr.state;
-
+    return mr
 
 #
 #    local utility functions
@@ -1326,7 +1316,7 @@ fedora_packages = {}
 #
 #######################################################
 for rhel_entry in open(rhel_list, 'r'):
-    (release, packages, bugnumber, erratanumber, nvr, state) = rhel_entry.strip().split(':')
+    (release, packages, bugnumber, erratanumber, nvr, state, glmr, glupstream) = rhel_entry.strip().split(':')
     entry=dict()
     print('release=',release,'packages=',packages,'bugnumber=',bugnumber,'erratanumber=',erratanumber,'nvr=',nvr,'state=',state)
     entry['packages']=packages
@@ -1334,6 +1324,8 @@ for rhel_entry in open(rhel_list, 'r'):
     entry['erratanumber']=int(erratanumber)
     entry['nvr']=nvr
     entry['state']=state
+    entry['glmr']=glmr
+    entry['glupstream']=glupstream
     rhel_packages[release]=entry
 
 for fedora_entry in open(fedora_list, 'r'):
@@ -1367,6 +1359,8 @@ for release in rhel_packages:
     bugnumber=entry['bugnumber']
     packages=entry['packages']
     issue = None
+    glmr = entry['glmr']
+    centosUpstream = entry['glupstream']
 
     print("  * handling bugs")
     if bugnumber == "0" :
@@ -1413,17 +1407,27 @@ for release in rhel_packages:
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
               # handle centos pull request here
               if (distro == "centos") :
-                    mr = gitlab_find_mr(gitlab_src_from_fork(CentOSFork), 'main',
-                                        CentOSFork.id)
-                    if (mr == None):
-                        gitlab_create_mr(CentOSFork, gitlab_src_from_fork(CentOSFork),
-                                              bugnumber, branch='main')
-                    elif (mr.state == "merged"):
-                        git_pull(get_build_packages_dir(distro, package, release))
-                    else:
-                        print(f"Merge request status: {mr.state}");
-                        entry['state'] = 'waiting centos merge'
-                        continue
+                  mr = None
+                  if centosUpstream is None:
+                      # create a new merge request
+                      centosUpstream = gitlab_src_from_fork(CentOSFork)
+                      entry['glupstream'] = centosUpstream.id
+
+                  if glmr is None:
+                      mr = gitlab_create_mr(CentOSFork, centosUpstream,
+                                            bugnumber, branch='main')
+                      entry['glmr'] = mr.id
+                  else:
+                      mr = gitlab_get_mr(centosUpstream, glmr)
+
+                  if (mr == None):
+                      continue
+                  elif (mr.state == "merged"):
+                      git_pull(get_build_packages_dir(distro, package, release))
+                  else:
+                      print(f"Merge request status: {mr.state}");
+                      entry['state'] = 'waiting centos merge'
+                      continue
 
               # [one build per major release]
               # build only if release is that lattest z stream or rhel-8 and older
@@ -1576,8 +1580,9 @@ for release in rhel_packages :
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
-    f.write("%s:%s:%s:%d:%s:%s\n"%(release,packages,bugnumber,
-            erratanumber,entry['nvr'],entry['state']))
+    f.write("%s:%s:%s:%d:%s:%s:%d:%d\n"%(release,packages,bugnumber,
+            erratanumber,entry['nvr'],entry['state'],
+            entry['centosupstream'], entry['glmr']))
 f.close()
 print("Updating %s"%fedora_list)
 f = open(fedora_list,"w")
