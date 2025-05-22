@@ -1105,7 +1105,7 @@ def build(release,package):
 
     pushd=os.getcwd()
     os.chdir(packagedir)
-    os.system("%s build"%package_tool[distro])
+    os.system("%s build --nowait"%package_tool[distro])
     os.chdir(pushd)
     state = build_state(nvr)
     if state == 'Complete' :
