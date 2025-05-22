@@ -363,6 +363,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     for package in packages_list :
        description=description+package_description_map[package]+'\n\n'
     description=description+description_base%(release_name,year,version,firefox_version,bugnumber)
+    product = 'ASYNC' if release_requires_build else 'RHEL' # [one build per major release]
     #now build the advisory
     advisory['errata_type']='RHBA'
     advisory['security_impact']='None'
@@ -374,7 +375,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     advisory['topic']=topic_base%(package_names,verb,release_description)
     advisory['idsfixed']=bugnumber
     errata= {}
-    errata['product']='RHEL'
+    errata['product']=product
     errata['release']=release_name
     errata['release_id']=release_get_release_id(release)
     errata['advisory']=advisory
