@@ -37,7 +37,7 @@ from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
 
 
-DRY_RUN = False # Used alongside staging enviroments for developement
+DRY_RUN = False # Used alongside staging environments for development
 
 rhel_list='./meta/rhel.list'
 fedora_list='./meta/fedora.list'
@@ -56,7 +56,7 @@ glab_url_base='https://gitlab.com/'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s and Microsoft %s [%s]'
-bug_description='Update CA certificates to version %s from NSS %s and Microsoft %s for our annual CA certficate update.'
+bug_description='Update CA certificates to version %s from NSS %s and Microsoft %s for our annual CA certificate update.'
 distro=None
 
 # Jira
@@ -85,7 +85,7 @@ package_tool = {
 }
 
 ga_list = []
-lattest_zstreams = []
+latest_zstreams = []
 errata_map = {}
 config = {}
 
@@ -125,12 +125,12 @@ def pad_rhel_version(version_string):
     padded_version = '.'.join(parts)
     return f"{prefix}-{padded_version}"
 
-def is_lattest_z_stream(release) :
+def is_latest_z_stream(release) :
     release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
-    return release in lattest_zstreams
+    return release in latest_zstreams
 
 def get_lattest_z_stream(major) :
-    for release in lattest_zstreams:
+    for release in latest_zstreams:
         if major == release_get_major(release):
             return release
     return None
@@ -163,7 +163,7 @@ def safe_int(a) :
 def release_requires_build(release):
     if safe_int(release_get_major(release)) < 9 :
        return True
-    return is_lattest_z_stream(release)
+    return is_latest_z_stream(release)
 
 def release_is_centos_stream(release) :
     if safe_int(release_get_major(release)) < 8 :
@@ -273,7 +273,7 @@ def get_ga_list() :
         l_ga_list.append(last_ga)
     return l_ga_list
 
-def get_lattest_zstreams() :
+def get_latest_zstreams() :
     l_zstream_list = []
     last_major = 0
     last_zstream = None
@@ -400,11 +400,11 @@ def issue_get(jira,bugnumber):
 #
 #    Errata helper function
 #
-# create a new errata and attack the bug returns the errata number
+# create a new errata and attach the bug returns the errata number
 def errata_create(release, version, firefox_version, packages, year, bugnumber) :
     release_name=release_map(release)
     if release_name == None :
-        print("Can'd find product version for release %s, skipping errata create"%release)
+        print("Can't find product version for release %s, skipping errata create"%release)
         return 0
     release_description=release_description_map(release)
     advisory= dict()
@@ -760,7 +760,7 @@ def errata_get_release_id():
 def errata_get_release_info() :
 
     # fetch release id's for products.
-    # Not to be confuded with product id's
+    # Not to be confused with product id's
     errata_release_ids = errata_get_release_id()
 
     # get releases
@@ -820,7 +820,7 @@ def errata_get_release_info() :
 def errata_merge_rpm_status(status, status2) :
     # first, state of PASSED has lowest priority
     # STATUSs are PASSED, WAIVED, INFO, FAILED, RUNING, PENDING
-    # in reverse order of precidence
+    # in reverse order of precedence
     if status == 'PASSED':
         return status2
     if status2 == 'PASSED':
@@ -828,10 +828,10 @@ def errata_merge_rpm_status(status, status2) :
     # if they are equal, return them
     if status == status2 :
         return state
-    # 'Pending' has the highest precidence
+    # 'Pending' has the highest precedence
     if status == 'PENDING' or status2 == 'PENDING' :
         return 'PENDING'
-    # 'Running' has the highest precidence
+    # 'Running' has the highest precedence
     if status == 'RUNNING' or status2 == 'RUNNING' :
         return 'RUNNING'
     # 'Failed' is next
@@ -840,7 +840,7 @@ def errata_merge_rpm_status(status, status2) :
     # now we know that 1) state != state2, and neither
     # is equal to 'Passed', 'Pending', 'Running' or 'Failed'
     # One must be 'Info' and the other 'Waived', 'Info'
-    # has precidence
+    # has precedence
     return 'INFO'
 
 def errata_get_rpm_state(erratanumber, builds) :
@@ -886,7 +886,7 @@ def errata_get_state(erratanumber) :
 def errata_set_state(erratanumber,newstate) :
     # errata of -1 means this distro doesn't use errata
     if erratanumber == -1 :
-        return 'UNKOWN'
+        return 'UNKNOWN'
     request= {}
     request['new_state'] = newstate
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -1105,7 +1105,7 @@ def merge_state(state, state2) :
     # if they are equal, return them
     if state == state2 :
         return state
-    # 'Failed' has the highest precidence
+    # 'Failed' has the highest precedence
     if state == 'Failed' or state2 == 'Failed' :
         return 'Failed'
     # 'Nobuilds' is next
@@ -1114,7 +1114,7 @@ def merge_state(state, state2) :
     # now we know that 1) state != state2, and neither
     # is equal to None, 'Complete', 'Failed', or 'Nobuilds'
     # One must be 'Gating' and the other 'Building', 'Building'
-    # has precidence
+    # has precedence
     return 'Building'
 
 def build_nvr(release,package):
@@ -1362,7 +1362,7 @@ if resync :
 
 # we have the errata_map now , we can get the ga_list
 ga_list = get_ga_list()
-lattest_zstreams = get_lattest_zstreams()
+latest_zstreams = get_latest_zstreams()
 
 if get_ga :
     for i in ga_list :
@@ -1450,7 +1450,7 @@ for release in rhel_packages:
             bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
-                zstream = is_lattest_z_stream(release) # relevant for 8^
+                zstream = is_latest_z_stream(release) # relevant for 8^
                 bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,mcs_version,packages, zstream)
 
                 if bugnumber == "0":
@@ -1508,14 +1508,14 @@ for release in rhel_packages:
                       continue
 
               # [one build per major release]
-              # build only if release is that lattest z stream or rhel-8 and older
+              # build only if release is that latest z stream or rhel-8 and older
               if release_requires_build(release):
                   nvr = build(release,package)
                   entry['nvr'] = add_nvr(nvr,entry['nvr'])
 
     if not release_requires_build(release):
         # [one build per major release]
-        # skip (ASYNC) errata creation if not the lattest z stream (only rhel-9^)
+        # skip (ASYNC) errata creation if not the latest z stream (only rhel-9^)
         continue
 
     builds=entry['nvr']
@@ -1567,7 +1567,7 @@ for release in rhel_packages:
     print("      * errata=%d"%erratanumber)
     entry['erratanumber'] = erratanumber
     # finally, once we have our errata and builds, attach them
-    if (bug_state == 'IN PRORESS') :
+    if (bug_state == 'IN PROGRESS') :
         if not errata_has_bug(erratanumber,bugnumber) :
             print("      * adding bug %s to  errata"%bugnumber)
             errata_add_bug(erratanumber, bugnumber, bug_resync)
@@ -1649,7 +1649,7 @@ for release in fedora_packages:
 
 #######################################################
 #
-# Upate in our status files
+# Update in our status files
 #
 #######################################################
 print("Updating %s"%rhel_list)
