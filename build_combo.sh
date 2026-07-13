@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Automatically update the selected builds with the new certdata.txt
 #
@@ -146,9 +146,9 @@ addpatch()
 # fetch and symbols likely used in the version number, currently only NSS
     echo $line | grep "^%global" > /dev/null
     if [ $? -eq 0 ]; then
-	echo $line | read glob sym value;
+	read glob sym value <<< "$line"
         case "${sym}" in
-        "nss_version") glob_nss_version=value;;
+        "nss_version") glob_nss_version=$value;;
         *) ;;
         esac
         echo "$line"
@@ -603,7 +603,7 @@ else
     echo "copying ${certdatadir}/certdata.txt"
     cp certdata.txt ${CACERTS}
     if [ $? -ne 0 ]; then
-       echo copying certdata.txt from ${certdata} failed!
+       echo copying certdata.txt from ${certdatadir} failed!
        exit 1;
     fi
     cd ${CACERTS}
@@ -613,7 +613,7 @@ ckbi_version=`grep "NSS_BUILTINS_LIBRARY_VERSION " nssckbi.h | awk '{print $NF}'
 
 if [ -f codesign-release.txt ]; then
     mcs_version=$(cat codesign-release.txt)
-    if [[ $ms_version != "unknown" ]]; then
+    if [[ $mcs_version != "unknown" ]]; then
         ckbi_version="${ckbi_version}_${mcs_version}"
     fi
 fi
@@ -649,8 +649,8 @@ if [ ${RHEL_CACERTS} -eq 1 ]; then
         git clone -c url."git@gitlab.com:".insteadOf="https://gitlab.com/" ${CENTOS_CACERTS_FORK} -b ${BRANCH_NAME} ${BRANCH_NAME}
 
         if [ ! -d "$BRANCH_NAME" ]; then
-            continue
             echo "Folder $BRANCH_NAME not found"
+            continue
         fi
 
         pushd ${BRANCH_NAME}
@@ -793,6 +793,9 @@ do
    echo "********************** ca-certificates $i *************************"
    if  echo ${CURRENT_RELEASES} | grep $i ; then
       cacertificates_update ${PACKAGES}/centos-fork/ca-certificates/c10s ${MODIFIED}/rhel10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "100.0" "101"
+   else
+      echo "CURRENT_RELEASES=\"${CURRENT_RELEASES}\" THIS_RELEASE=$i"
+      cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "100.0" "101"
    fi
    errors=$(expr $errors + $?)
    echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
