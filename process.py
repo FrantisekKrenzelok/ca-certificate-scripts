@@ -100,7 +100,7 @@ def get_build_packages_dir(distro,package,release) :
         return packages_dir[distro]+"/%s"%package;
     major = safe_int(release_get_major(release))
     if major > 9:
-        return packages_dir[distro]+"%s/rhel%s-main"%(package,)
+        return packages_dir[distro]+"%s/rhel%s-main"%(package,major)
     return packages_dir[distro]+"%s/%s"%(package,release)
 #
 # mapping functions to map release
@@ -544,7 +544,7 @@ def errata_has_bug(errata, bug) :
         return True
     bugs = errata_get_bugs(errata)
     for this_bug in bugs :
-        if bug == int(this_bug) :
+        if str(bug) == str(this_bug) :
             return True
     return False
 
@@ -689,11 +689,11 @@ def errata_nvrcmp(rel1,rel2) :
     for i in range(0,min(len(comp1),len(comp2))) :
         if comp1[i] < comp2[i] :
            return -1
-        if comp2[i] > comp2[i] :
+        if comp1[i] > comp2[i] :
            return 1
-    if len(cmp1) < len(cmp2) :
+    if len(comp1) < len(comp2) :
         return -1
-    if len(cmp1) > len(cmp2) :
+    if len(comp1) > len(comp2) :
         return 1
 
 def errata_get_version_order(version) :
@@ -827,7 +827,7 @@ def errata_merge_rpm_status(status, status2) :
         return status
     # if they are equal, return them
     if status == status2 :
-        return state
+        return status
     # 'Pending' has the highest precedence
     if status == 'PENDING' or status2 == 'PENDING' :
         return 'PENDING'
@@ -956,7 +956,7 @@ def git_checkin(release, package, bugnumber):
     for cfile in diff.iter_change_type('A'):
         if cfile != checkin_log :
             print("Adding new file",cfile)
-            index.add(cfile.b_patch)
+            index.add(cfile.b_path)
     for cfile in diff.iter_change_type('D'):
         print("Adding removed file",cfile.a_path)
         index.remove([cfile.a_path])
@@ -1189,7 +1189,7 @@ def build(release,package):
 #
 #######################################################
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",["resync","get-ga","getconfig="])
+    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run"])
 except getopt.GetoptError as err:
     print(err)
     print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-j jiraaurlbase]')
@@ -1348,8 +1348,8 @@ if not resync :
         else :
             errata_map = json.loads(f.read())
         f.close()
-    except:
-        resync=False
+    except Exception:
+        resync=True
 
 if resync :
     errata_map = errata_get_release_info()
@@ -1511,7 +1511,7 @@ for release in rhel_packages:
               # build only if release is that latest z stream or rhel-8 and older
               if release_requires_build(release):
                   nvr = build(release,package)
-                  entry['nvr'] = add_nvr(nvr,entry['nvr'])
+                  entry['nvr'] = add_nvr(entry['nvr'],nvr)
 
     if not release_requires_build(release):
         # [one build per major release]
@@ -1623,7 +1623,7 @@ for release in fedora_packages:
               all_builds_pushed=False
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
               nvr = build(release,package)
-              entry['nvr'] = add_nvr(nvr,entry['nvr'])
+              entry['nvr'] = add_nvr(entry['nvr'],nvr)
     builds=entry['nvr']
     erratanumber=entry['erratanumber']
     all_builds_complete = builds_complete(builds, packages)
@@ -1690,7 +1690,7 @@ for release in rhel_packages :
     print("%s: state='%s' bug=%s errata=%d"%(release,entry['state'],bugnumber,erratanumber))
     if bugnumber != "0":
         print("    %s/show_bug.cgi?id=%s"%(jira_url_base,bugnumber))
-    if erratanumber != "0":
+    if erratanumber != 0:
         print("    %s/advisory/%d"%(errata_url_base,erratanumber))
     for package in packages.split(',') :
         (task, nvr, state) = build_get_info(release, package)
