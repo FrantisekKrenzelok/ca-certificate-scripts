@@ -1431,6 +1431,7 @@ for release in rhel_packages:
     bugnumber=entry['bugnumber']
     packages=entry['packages']
     issue = None
+    centosUpstream = None
     glmr = entry['glmr']
     glupstream = entry['glupstream']
 
@@ -1466,7 +1467,6 @@ for release in rhel_packages:
     if issue == None :
         issue = issue_get(Jira,bugnumber)
     # if we are here, we have our bug created for our release, we can check it in
-    continue
     all_builds_pushed=True
     print("  * checking git tree status")
     for package in packages.split(',') :
