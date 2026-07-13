@@ -575,7 +575,6 @@ if [ -z "${certdatadir}" ]; then
     if [ ${MERGE_OBJECT_SIGN} -ne 0 ]; then
         echo ">> fetching signed objects certs"
         sign_obj_cas="microsoft_sign_obj_ca.pem"
-        echo ${rootPath}/fetch_objsign.sh -n -o "${sign_obj_cas}"
         ${rootPath}/fetch_objsign.sh -n -o "${sign_obj_cas}"
         python3 ${rootPath}/mergepem2certdata.py -c "certdata.txt.orig" -p "${sign_obj_cas}" -o "certdata.txt" -t "CKA_TRUST_CODE_SIGNING" -l "Microsoft Code Signing Only Certificate" -x "${PRUNE_DATE}"
     else

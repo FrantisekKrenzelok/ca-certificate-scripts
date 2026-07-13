@@ -21,7 +21,7 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301,
 # USA.
 
-import os.path
+import os
 import subprocess
 import sys
 import getopt
@@ -32,6 +32,7 @@ import datetime
 import jira
 import gitlab
 import re
+from functools import cmp_to_key
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
@@ -113,36 +114,9 @@ def get_need_zstream_clone(release) :
     return not release in ga_list
 
 
-def pad_rhel_version(version_string):
-    """Pads a RHEL version string to the rhel-X.Y.Z format."""
-    prefix, version = version_string.split('-')
-    parts = version.split('.')
-
-    # Add missing parts with '0' until we have 3 (Major.Minor.Patch)
-    while len(parts) < 3:
-        parts.append('0')
-
-    padded_version = '.'.join(parts)
-    return f"{prefix}-{padded_version}"
-
 def is_latest_z_stream(release) :
     release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
     return release in latest_zstreams
-
-def get_lattest_z_stream(major) :
-    for release in latest_zstreams:
-        if major == release_get_major(release):
-            return release
-    return None
-
-def bug_version_map(release):
-    comp=release.split('-')
-    if len(comp) != 2:
-        return "0"
-    version=comp[1].split('.')
-    if len(version) < 2 :
-        return "0"
-    return version[0]+"."+version[1]
 
 def release_get_major(release):
     comp=release.split('-')
@@ -170,12 +144,6 @@ def release_is_centos_stream(release) :
        return False
     return not get_need_zstream_clone(release)
 
-
-def product_map(release):
-    major = release_get_major(release)
-    if (major == None) :
-        return "Unkown product"
-    return "Red Hat Enterprise Linux "+major
 
 #
 # mapping functions to map release
@@ -224,28 +192,6 @@ description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates pa
 synopsis="%s bug fix and enhancement update"
 topic_base="An update for %s %s now available for %s."
 checkin_log="checkin.log"
-
-# even though this isn't a conversion, it's more convenient to
-# use this function than to try to default almost identical
-# code for each of these operators
-def cmp_to_key(mycmp):
-    'Convert a cmp= function into a key= function'
-    class K:
-        def __init__(self, obj, *args):
-            self.obj = obj
-        def __lt__(self, other):
-            return mycmp(self.obj, other.obj) < 0
-        def __gt__(self, other):
-            return mycmp(self.obj, other.obj) > 0
-        def __eq__(self, other):
-            return mycmp(self.obj, other.obj) == 0
-        def __le__(self, other):
-            return mycmp(self.obj, other.obj) <= 0
-        def __ge__(self, other):
-            return mycmp(self.obj, other.obj) >= 0
-        def __ne__(self, other):
-            return mycmp(self.obj, other.obj) != 0
-    return K
 
 def splitnumeric(string) :
     numeric=''
@@ -911,8 +857,6 @@ def git_files_exist(diff):
             return True
     for cfile in diff.iter_change_type('D'):
         return True
-    #for cfile in diff.iter_change_type('R'):
-    #    return True
     for cfile in diff.iter_change_type('T'):
         return True
     return False
@@ -1218,7 +1162,6 @@ try:
 except :
     mcs_version=None
 
-has_firefox_version=True
 try:
     f = open(firefox_info, "r")
     firefox_version=f.read().strip()
@@ -1288,11 +1231,6 @@ for opt, arg in opts:
         else:
             print(config[arg]);
         sys.exit(0)
-
-qe_line=''
-if  qe != None :
-    qe_line=', "assign_to_email":"'+qe+'"'
-
 
 if jira_api_key is not None:
     base_options = {
