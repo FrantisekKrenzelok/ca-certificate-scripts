@@ -14,7 +14,7 @@ SCRATCH=${SCRIPT_LOC}/scratch.$$
 META_DATA=${SCRIPT_LOC}/meta
 baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/security/nss/lib"
 release_type="RTM"
-release="3_67"
+release="3_114"
 verbose=1
 CURRENT_RELEASES="rawhide $(./process.py --get-ga)"
 CENTOS_CACERTS_FORK=$(./process.py --getconfig centos_fork)
@@ -737,7 +737,7 @@ do
    echo "**************************** nss $i ******************************"
    nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
    errors=$(expr $errors + $?)
-   echo $i:nss,openssl:0:0::staged >> ${RHEL_LIST}
+   echo $i:nss,openssl:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL6}
 do
@@ -747,7 +747,7 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "60.0" "61"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates,nss:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates,nss:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL7o}
 do
@@ -757,7 +757,7 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates,nss:0,0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates,nss:0,0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL7}
 do
@@ -767,14 +767,14 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL8}
 do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel8/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "80.0" "81"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL9}
 do
@@ -786,7 +786,7 @@ do
       cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
    fi
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${RHEL10}
 do
@@ -795,7 +795,7 @@ do
       cacertificates_update ${PACKAGES}/centos-fork/ca-certificates/c10s ${MODIFIED}/rhel10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "100.0" "101"
    fi
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
 done
 for i in ${FEDORA}
 do

@@ -10,6 +10,7 @@ Prerequisites(process.py):
 pip install requests_toolbelt
 pip install python-gitlab
 pip install jira
+pip install asn1
 ```
 
 
