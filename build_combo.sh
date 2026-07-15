@@ -18,8 +18,6 @@ release="3_114"
 verbose=1
 CURRENT_RELEASES="rawhide $(./process.py --get-ga)"
 CENTOS_CACERTS_FORK=$(./process.py --getconfig centos_fork)
-RHEL_NSS=0
-RHEL_OPENSSL=0
 RHEL_CACERTS=0
 FEDORA_CACERTS=0
 PRUNE_DATE='NEVER'
@@ -205,170 +203,6 @@ addpatch()
     return 0
 }
 
-# update an openssl build
-openssl_update()
-{
-   OPENSSLPACKAGEDIR=$1
-   CERTDATA=$2
-   NSSCKBI=$3
-   nss_version=$4
-   ckbi_version=$5
-   SCRATCH=$6
-   RELEASE=$7
-
-   # make sure the generated certdata file exists
-   if [ ! -f ${CERTDATA} ]; then
-	echo "!!!Skipping openssl build for ${RELEASE}. no certdata.txt generated"
-        return 1
-   fi
-   if [ ! -d ${OPENSSLPACKAGEDIR} ]; then
-	echo "!!!Skipping openssl build for ${RELEASE}. no git repository found"
-        return 1
-   fi
-   if [ ! -d ${PACKAGES}/ca-certificates/rhel-6.6 ]; then
-	echo "!!!Skipping openssl build for ${RELEASE}. Couldn't find rhel-6.6 ca-certificates"
-        return 1
-   fi
-
-   # first copy the rhel-6.6 ca-certificates branch to the scratch directory
-   rm -rf ${SCRATCH}
-   mkdir -p ${SCRATCH}
-   echo ">>> fetching rhel-6.6 ca-certificates"
-   (cd ${PACKAGES}/ca-certificates ; tar cf - rhel-6.6) | (cd ${SCRATCH} ; tar xf -)
-   cd ${SCRATCH}/rhel-6.6
-   # remove the java BuildRequires line
-   cat ca-certificates.spec | while IFS= read -r line
-   do
-      echo $line | grep "^BuildRequires:.*java-.*-openjdk" > /dev/null
-      if [ $? -eq 0 ]; then
-	echo "#${line}"
-        continue
-      fi
-      echo $line | grep "^BuildRequires:.*asciidoc" > /dev/null
-      if [ $? -eq 0 ]; then
-	echo "#${line}"
-        continue
-      fi
-      echo "$line"
-   done > /tmp/tmp.spec.$$
-   mv /tmp/tmp.spec.$$ ca-certificates.spec
-   # fetch or modifed certdata.txt
-   cp ${CERTDATA} .
-   # do a build. This has a side effect of generating a bunch of .crt files
-   echo ">>> build ca-certificates.spec with the new spec"
-   rhpkg -q local 2>&1 | grep -v "Certificate was added to keystore"
-   if [ ! -d ca-certificates ]; then
-	echo "!!!Skipping openssl build for ${RELEASE}. rhpkg local failed"
-        return 1
-   fi
-   # run or magic scripts to create our new bundle
-   echo ">>> use the ca-certificates build to create an openssl bundle."
-   cd ca-certificates
-   cp ${SCRIPT_LOC}/doit.sh .
-   cp ${SCRIPT_LOC}/sort-bundle.py .
-   ./doit.sh -q
-   cp ${OPENSSLPACKAGEDIR}/ca-bundle.crt ./old-ca-bundle.crt
-   python sort-bundle.py
-   # check out output
-   echo ">>> verify against the old bundle."
-   diff ./old-ca-bundle.crt sorted-new > /dev/null
-   if [ $? -eq 0 ]; then
-	echo "Skipping openssl build for ${RELEASE}. ca-bundle.crt is already up to date";
-	return 0
-   fi
-   ${SCRIPT_LOC}/check_certs.sh ./old-ca-bundle.crt sorted-new -b | sed -e 's;       Subject: ;;' > ${SCRATCH}/cert_log
-   # copy our new bundle
-   cp sorted-new ${OPENSSLPACKAGEDIR}/ca-bundle.crt
-   # update our spec file
-   cd ${OPENSSLPACKAGEDIR}
-   echo ">>> update openssl.spec"
-   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
-   if [ ${verbose} -eq 1 ]; then
-      git --no-pager diff openssl.spec
-   fi
-   git add openssl.spec ca-bundle.crt
-   if [ ${verbose} -eq 1 ]; then
-       git status
-   fi
-   return 0
-}
-
-# update an NSS build
-nss_update()
-{
-   NSSPACKAGEDIR=$1
-   CERTDATA=$2
-   NSSCKBI=$3
-   nss_version=$4
-   ckbi_version=$5
-   SCRATCH=$6
-   RELEASE=$7
-
-   # make sure the generated certdata file exists
-   if [ ! -f ${CERTDATA} ]; then
-	echo "!!!Skipping nss build for ${RELEASE}. no certdata.txt generated"
-        return 1
-   fi
-   if [ ! -d ${NSSPACKAGEDIR} ]; then
-	echo "!!!Skipping nss build for ${RELEASE}. no git repository found"
-        return 1
-   fi
-
-   # create an NSS build directory
-   rm -rf ${SCRATCH}
-   mkdir -p ${SCRATCH}/SPECS
-   mkdir -p ${SCRATCH}/SOURCES
-   mkdir -p ${SCRATCH}/BUILD
-   cd ${NSSPACKAGEDIR}
-   echo "Fetch and extract the current nss build"
-   rhpkg -q srpm
-   rpm -i --define="%_topdir ${SCRATCH}" nss-*.src.rpm
-   cd ${SCRATCH}/SPECS
-   rpmbuild -bp nss.spec --define="%_topdir ${SCRATCH}" --quiet --nodeps
-   if [ $? -ne 0 ]; then
-	echo "!!!Skipping nss build for ${RELEASE}. rpmbuild -bp failed"
-        return 1
-   fi
-   cd ${SCRATCH}/BUILD/nss*
-   if [ $? -ne 0 ]; then
-	echo "!!!Skipping nss build for ${RELEASE}. Couldn't find build directory"
-        return 1
-   fi
-   ${SCRIPT_LOC}/check_certs.sh ./nss/lib/ckfw/builtins/certdata.txt $CERTDATA > ${SCRATCH}/cert_log
-   diff ./nss/lib/ckfw/builtins/certdata.txt ${CERTDATA} > /dev/null
-   if [ $? -eq 0 ]; then
-	echo "Skipping nss build for ${RELEASE}. certdata is already up to date";
-	return 0
-   fi
-   echo ">>> generating patch file nss-${RELEASE}-ca-${ckbi_version}.patch"
-   mv ./nss/lib/ckfw/builtins/certdata.txt ./nss/lib/ckfw/builtins/certdata.txt.ca-${ckbi_version}
-   mv ./nss/lib/ckfw/builtins/nssckbi.h ./nss/lib/ckfw/builtins/nssckbi.h.ca-${ckbi_version}
-   cp ${CERTDATA} ./nss/lib/ckfw/builtins/
-   cp ${NSSCKBI} ./nss/lib/ckfw/builtins/
-   gendiff . .ca-${ckbi_version} > ${SCRATCH}/SOURCES/nss-${RELEASE}-ca-${ckbi_version}.patch
-   cd ${SCRATCH}/SPECS
-   echo ">>> update nss.spec"
-   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
-   echo ">>> verify updated nss.spec"
-   rpmbuild -bp nss.spec --define="%_topdir ${SCRATCH}" --quiet --nodeps
-   if [ $? -ne 0 ]; then
-	echo "!!!Skipping nss build for ${RELEASE}. spec file update failed"
-	return 1
-   fi
-   cp ${SCRATCH}/SPECS/nss.spec ${NSSPACKAGEDIR}/
-   cp ${SCRATCH}/SPECS/checkin.log ${NSSPACKAGEDIR}/
-   cp ${SCRATCH}/SOURCES/nss-${RELEASE}-ca-${ckbi_version}.patch ${NSSPACKAGEDIR}/
-   cd ${NSSPACKAGEDIR}
-   if [ ${verbose} -eq 1 ]; then
-   	git --no-pager diff nss.spec
-   fi
-   git add nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch
-   if [ ${verbose} -eq 1 ]; then
-       git status
-   fi
-   return 0
-}
-
 # update a CA-cert build
 cacertificates_update()
 {
@@ -465,22 +299,9 @@ while [ -n "$1" ]; do
            PRUNE_DATE=$1
         fi
         ;;
-    rhel-5*) RHEL5="${RHEL5} $1"; RHEL_NSS=1; RHEL_OPENSSL=1;;
-    rhel-6*) RHEL6="${RHEL6} $1"; RHEL_NSS=1; RHEL_CACERTS=1;;
     rhel-8*) RHEL8="${RHEL8} $1"; RHEL_CACERTS=1;;
     rhel-9*) RHEL9="${RHEL9} $1"; RHEL_CACERTS=1;;
     rhel-10*) RHEL10="${RHEL10} $1"; RHEL_CACERTS=1;;
-    rhel-7*) if [ $1 \< "rhel-7.5" ]; then
-	       RHEL7o="${RHEL7o} $1"
-	    fi
-            if [ $1 = "rhel-7.5" ]; then
-	       RHEL7="${RHEL7} $1"
-	    fi
-            if [ $1 \> "rhel-7.5" ]; then
-	       RHEL7="${RHEL7} $1"
-	    fi
-	    RHEL_NSS=1; RHEL_CACERTS=1;
-	    ;;
      f*|rawhide)
             FEDORA="${FEDORA} $1"; FEDORA_CACERTS=1;;
     *)
@@ -505,14 +326,6 @@ rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS} ${META_DATA}
 mkdir -p ${PACKAGES}
 mkdir -p ${CACERTS}
 mkdir -p ${META_DATA}
-if [ -n "${RHEL7o}" ]; then
-   mkdir -p ${MODIFIED}/rhel7_4/ca-certificates
-   mkdir -p ${MODIFIED}/rhel7_4/nss
-fi
-if [ -n "${RHEL7}" ]; then
-    mkdir -p ${MODIFIED}/rhel7_5/ca-certificates
-    mkdir -p ${MODIFIED}/rhel7_5/nss
-fi
 if [ -n "${RHEL8}" ]; then
     mkdir -p ${MODIFIED}/rhel8/ca-certificates
     CENTOS_LIST+=( "8" )
@@ -524,14 +337,6 @@ fi
 if [ -n "${RHEL10}" ]; then
     mkdir -p ${MODIFIED}/rhel10/ca-certificates
     CENTOS_LIST+=( "10" )
-fi
-if [ -n "${RHEL6}" ]; then
-    mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
-    mkdir -p ${MODIFIED}/rhel6_10/nss
-fi
-if [ -n "${RHEL5}" ]; then
-    mkdir -p ${MODIFIED}/rhel5/nss
-    mkdir -p ${MODIFIED}/rhel5/openssl
 fi
 if [ -n "${FEDORA}" ]; then
     mkdir -p ${MODIFIED}/fedora/ca-certificates
@@ -667,14 +472,6 @@ if [ ${RHEL_CACERTS} -eq 1 ]; then
     popd
 fi
 
-if [ ${RHEL_NSS} -eq 1 ]; then
-    echo ">> fetching rhel nss"
-    rhpkg -q clone -B nss
-fi
-if [ ${RHEL_OPENSSL} -eq 1 ]; then
-    echo ">> fetching rhel openssl"
-    rhpkg -q clone -B openssl
-fi
 if [ ${FEDORA_CACERTS} -eq 1 ]; then
     echo ">> fetching fedora ca-certificates"
     (cd fedora; fedpkg -q clone -B ca-certificates)
@@ -702,72 +499,12 @@ if [ -n "${RHEL8}" ]; then
      echo " - Creating RHEL 8 certdata.txt rhel8=${RHEL8} "
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel8/ca-certificates/certdata.txt
 fi
-if [ -n "${RHEL7}" ]; then
-     echo " - Creating RHEL 7 certdata.txt rhel7=${RHEL7}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/nss/certdata.txt --without-legacy-choice
-fi
-if [ -n "${RHEL7o}" ]; then
-     echo " - Creating RHEL 7.4 certdata.txt rhel7o=${RHEL7o}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt --add-legacy-codesign
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/nss/certdata.txt --add-legacy-codesign --without-legacy-choice
-fi
-if [ -n "${RHEL6}" ]; then
-     echo " - Creating RHEL 6 certdata.txt rhel6=${RHEL6}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign --without-distrust-after
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice  --without-distrust-after
-fi
-if [ -n "${RHEL5}" ]; then
-     echo " - Creating RHEL 5 certdata.txt rhel5=${RHEL5}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute --without-distrust-after
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute -without-distrust-after
-fi
 
 # update the relevant builds
 echo "******************************************************************"
 echo "*          Updating RHEL packages                                *"
 echo "******************************************************************"
 errors=0
-for i in ${RHEL5}
-do
-   echo "************************** openssl $i ****************************"
-   openssl_update ${PACKAGES}/openssl/$i ${MODIFIED}/rhel5/openssl/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   errors=$(expr $errors + $?)
-   echo "**************************** nss $i ******************************"
-   nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   errors=$(expr $errors + $?)
-   echo $i:nss,openssl:0:0::staged:: >> ${RHEL_LIST}
-done
-for i in ${RHEL6}
-do
-   echo "**************************** nss $i ******************************"
-   nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel6_10/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   errors=$(expr $errors + $?)
-   echo "********************** ca-certificates $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "60.0" "61"
-   errors=$(expr $errors + $?)
-   echo $i:ca-certificates,nss:0:0::staged:: >> ${RHEL_LIST}
-done
-for i in ${RHEL7o}
-do
-   echo "**************************** nss $i ******************************"
-   nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_4/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   errors=$(expr $errors + $?)
-   echo "********************** ca-certificates $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
-   errors=$(expr $errors + $?)
-   echo $i:ca-certificates,nss:0,0::staged:: >> ${RHEL_LIST}
-done
-for i in ${RHEL7}
-do
-   #echo "**************************** nss $i ******************************"
-   #nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   #errors=$(expr $errors + $?)
-   echo "********************** ca-certificates $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
-   errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
-done
 for i in ${RHEL8}
 do
    echo "********************** ca-certificates $i *************************"

@@ -171,8 +171,6 @@ def release_get_release_id(release):
 
 package_description_map= {
     "ca-certificates":"The ca-certificates package contains a set of Certificate Authority (CA) certificates chosen by the Mozilla Foundation for use with the Internet Public Key Infrastructure (PKI).",
-    "nss":"Network Security Services (NSS) is a set of libraries designed to support the cross-platform development of security-enabled client and server applications.",
-    "openssl":"OpenSSL is a toolkit that implements the Secure Sockets Layer (SSL) and Transport Layer Security (TLS) protocols, as well as a full-strength general-purpose cryptography library."
 }
 
 # constants
@@ -1269,7 +1267,7 @@ if GLab != None and centos_fork != None:
     CentOSFork = GLab.projects.get(centos_fork.replace(glab_url_base, ""))
 
 #
-# initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
+# initialize our map of release names (rhel-8.10, rhel-9.6.0, etc.) to
 # various values and descriptions used by the errata system. We query
 # the errata system to find those mapping, then we cache them in
 # the errata_cache_file. From then on we just use the cache unless
