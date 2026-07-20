@@ -139,10 +139,23 @@ def _adf(text):
 def jira_fixversion(release):
     """
     Convert errata-map release name to Jira fixVersion name.
-    The errata map uses rhel-X.Y.0 but Jira uses rhel-X.Y (no trailing .0).
+
+    Older RHEL releases keep the trailing .0 in Jira fixVersions:
+      - RHEL 8 minor < 10  → rhel-8.4.0  (not rhel-8.4)
+      - RHEL 9 minor <= 2  → rhel-9.2.0  (not rhel-9.2)
+    Newer releases strip it:
+      - RHEL 8.10           → rhel-8.10   (exception)
+      - RHEL 9.4+           → rhel-9.4
+      - RHEL 10+            → rhel-10.0, rhel-10.2 (already 2-part in errata map)
     """
     import re
-    return re.sub(r'^(rhel-\d+\.\d+)\.0$', r'\1', release)
+    m = re.match(r'^rhel-(\d+)\.(\d+)\.0$', release)
+    if not m:
+        return release  # already 2-part (e.g. rhel-10.2) or no trailing .0
+    major, minor = int(m.group(1)), int(m.group(2))
+    if (major == 8 and minor < 10) or (major == 9 and minor <= 2):
+        return release  # keep the .0: rhel-8.4.0, rhel-8.6.0, rhel-9.2.0
+    return f'rhel-{major}.{minor}'  # strip the .0: rhel-8.10, rhel-9.4, etc.
 
 def issue_create(session, release, version, nss_version, firefox_version,
                  mcs_version, packages, zstream, year):
