@@ -179,8 +179,8 @@ def _issue_create(release, version, nss_version, firefox_version, mcs_version, p
 def _issue_lookup(release, version, packages, zstream=False):
     return issue_lookup(Jira, release, version, packages, year, zstream)
 
-def _issue_request_clone(release, version, packages):
-    return issue_request_clone(Jira, release, version, packages, year)
+def _issue_request_clone(issue):
+    return issue_request_clone(Jira, issue)
 
 def _issue_get(bugnumber):
     return issue_get(Jira, bugnumber)
@@ -983,7 +983,7 @@ for release in rhel_packages:
 
                 # Request clone right away
                 if safe_int(release_get_major(release)) > 8:
-                    _issue_request_clone(release, version, packages)
+                    _issue_request_clone(issue)
 
             entry['bugnumber']=bugnumber
     print("      * bug=%s"%bugnumber)

@@ -8,12 +8,14 @@
 # build_combo.sh and process.py can run against pre-populated bug numbers.
 #
 # Usage (pick one mode):
-#   ./plan.py -f 138 --rhel        # auto-discover all active RHEL releases
-#   ./plan.py -f 138 --fedora      # auto-discover current/pending Fedora releases
+#   ./plan.py -f 138 -n 3.114 -s 1.5 --rhel
+#   ./plan.py -f 138 --fedora
 #
 # Options:
-#   -f <firefox_version>   Firefox version for this update (required)
-#   -v <ckbi_version>      Override CKBI version
+#   -f <firefox_version>   Firefox version for this update (required for --rhel)
+#   -n <nss_version>       NSS version (e.g. 3.114)
+#   -s <mcs_version>       Microsoft code-signing version
+#   -v <ckbi_version>      CKBI/ca-certificates version override
 #   -o <owner_email>       Override owner from config
 #   -m <manager_email>     Override manager from config
 #   --dry-run              Show what would happen without creating anything
@@ -97,15 +99,15 @@ def _handle_rhel(release, is_ga):
         return '0'
 
     if is_ga:
-        bugnumber, _ = issue_lookup(Jira, release, ver, packages, year)
+        bugnumber, issue = issue_lookup(Jira, release, ver, packages, year)
         if bugnumber == '0':
-            bugnumber, _ = issue_create(
+            bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=False, year=year)
             # Only request clones on first creation, not on subsequent re-runs
-            if bugnumber not in ('0', 'DRY-0') and safe_int(release_get_major(release)) > 8:
+            if issue is not None and safe_int(release_get_major(release)) > 8:
                 print(f'  requesting z-stream clones for all active {release} z-streams')
-                issue_request_clone(Jira, release, ver, packages, year, dry_run=DRY_RUN)
+                issue_request_clone(Jira, issue, dry_run=DRY_RUN)
     else:
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
         if bugnumber == '0':
@@ -126,16 +128,18 @@ def _maybe_create_crypto_epic(release, bugnumber):
 
 try:
     opts, _ = getopt.getopt(
-        sys.argv[1:], 'f:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora'])
+        sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora'])
 except getopt.GetoptError as err:
     print(err)
-    print('Usage: plan.py -f <firefox> [--rhel | --fedora] [--dry-run] [--resync]')
+    print('Usage: plan.py -f <firefox> [-n <nss_version>] [-s <mcs_version>] [--rhel | --fedora] [--dry-run] [--resync]')
     sys.exit(2)
 
 mode            = None   # 'rhel' or 'fedora'
 resync          = False
 firefox_version = None
 version         = None
+nss_version     = None
+mcs_version     = None
 owner           = None
 manager         = None
 jira_api_key    = None
@@ -168,6 +172,8 @@ for config_line in open(config_file, 'r'):
 
 for opt, arg in opts:
     if opt == '-f':          firefox_version = arg
+    elif opt == '-n':        nss_version = arg
+    elif opt == '-s':        mcs_version = arg
     elif opt == '-v':        version = arg
     elif opt == '-o':        owner = arg
     elif opt == '-m':        manager = arg
@@ -180,15 +186,16 @@ if mode is None:
     print('Specify a mode: --rhel or --fedora')
     sys.exit(1)
 
-if firefox_version is None:
-    print('Firefox version required. Use -f <version>.')
+if firefox_version is None and mode == 'rhel':
+    print('Firefox version required for --rhel. Use -f <version>.')
     sys.exit(2)
+firefox_version = firefox_version or 'unknown'
 
 year    = datetime.date.today().strftime('%Y')
 packages = 'ca-certificates'
-ver     = version or 'unknown'
-nss_ver = config.get('nss_version', 'unknown')
-mcs_ver = config.get('mcs_version', 'unknown')
+ver     = version     or config.get('version',      'unknown')
+nss_ver = nss_version or config.get('nss_version',  'unknown')
+mcs_ver = mcs_version or config.get('mcs_version',  'unknown')
 
 # ── errata map (RHEL mode only) ───────────────────────────────────────────────
 

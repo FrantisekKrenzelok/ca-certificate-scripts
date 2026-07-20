@@ -75,11 +75,16 @@ def issue_lookup(Jira, release, version, packages, year, zstream=False):
 
     return issues[0].key, issues[0]
 
-def issue_request_clone(Jira, release, version, packages, year, dry_run=False):
-    """Request a z-stream bug clone for the given GA release bug."""
-    _, issue = issue_lookup(Jira, release, version, packages, year)
-    if issue is None:
-        return False
+def issue_request_clone(Jira, issue_or_key, dry_run=False):
+    """Request a z-stream bug clone on a GA issue (object or key string)."""
+    if isinstance(issue_or_key, str):
+        try:
+            issue = Jira.issue(issue_or_key)
+        except JIRAError as e:
+            print(e)
+            return False
+    else:
+        issue = issue_or_key
     if dry_run:
         print(f'  DRY_RUN: would request z-stream clone for {issue.key}')
         return True
