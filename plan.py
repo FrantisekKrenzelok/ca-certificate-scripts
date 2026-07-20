@@ -29,6 +29,8 @@ import json
 import datetime
 import requests
 
+from requests_kerberos import HTTPKerberosAuth
+
 from caupdate.release import (
     release_get_major, safe_int,
     get_need_zstream_clone,
@@ -72,7 +74,7 @@ def cryptosvc_create_errata(component, fixversion, bugs):
         print(f'  DRY_RUN: POST {url} {body}')
         return True
     r = requests.post(url, headers=headers, json=body, timeout=30,
-                      verify=ca_certs_file)
+                      verify=ca_certs_file, auth=HTTPKerberosAuth())
     if r.status_code == 409:
         print(f'  CRYPTO errata epic already exists for {component}/{fixversion}')
         return True
