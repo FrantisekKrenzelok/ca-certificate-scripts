@@ -159,6 +159,7 @@ manager=None
 qe=None
 firefox_version=None
 jira_api_key=None
+jira_user=None
 Jira=None
 GLab=None
 glab_api_key=None
@@ -832,6 +833,8 @@ for config_line in open(config_file, 'r'):
        jira_url_base = value.strip()
     if key == 'jira_api_key':
        jira_api_key = value.strip()
+    if key == 'jira_user':
+       jira_user = value.strip()
     if key == 'gitlab_url':
        glab_url_base = value.strip()
     if key == 'gitlab_api_key':
@@ -873,7 +876,7 @@ for opt, arg in opts:
         sys.exit(0)
 
 if jira_api_key is not None:
-    Jira = make_jira_client(jira_url_base, jira_api_key)
+    Jira = make_jira_client(jira_url_base, jira_api_key, jira_user=jira_user)
 
 if glab_api_key != None:
     try:

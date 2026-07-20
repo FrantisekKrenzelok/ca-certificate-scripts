@@ -133,6 +133,7 @@ mcs_version     = None
 owner           = None
 manager         = None
 jira_api_key    = None
+jira_user              = None
 cryptosvc_url          = None
 cryptosvc_access_token = None
 cryptosvc_pat          = None
@@ -149,7 +150,8 @@ for config_line in open(config_file, 'r'):
     if key == 'manager':                  manager = value
     if key == 'jira_url':                 jira_url_base = value
     if key == 'jira_api_key':             jira_api_key = value
-    if key == 'errata_url':               errata_url_base = value
+    if key == 'jira_user':               jira_user = value
+    if key == 'errata_url':              errata_url_base = value
     if key == 'version':                  version = value
     if key == 'firefox':                  firefox_version = value
     if key == 'cryptosvc_url':            cryptosvc_url = value
@@ -215,7 +217,7 @@ if mode == 'rhel':
 
 Jira = None
 if mode == 'rhel' and jira_api_key and not DRY_RUN:
-    Jira = make_jira_client(jira_url_base, jira_api_key)
+    Jira = make_jira_client(jira_url_base, jira_api_key, jira_user=jira_user)
 
 # ── wipe and recreate meta/ ───────────────────────────────────────────────────
 

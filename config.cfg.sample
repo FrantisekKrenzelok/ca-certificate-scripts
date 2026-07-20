@@ -3,6 +3,7 @@ manager:package_owner_manager@redhat.com
 qe:package_qe@redhat.com
 jira_url:https://issues.redhat.com
 jira_api_key:xxStringFromJiraProfilePersonalAccessTokens
+jira_user:your-email@redhat.com
 centos_fork:git@gitlab.com:package_owner/ca-certificates.git
 glab_url_base:https://gitlab.com/
 glab_api_key:XXXXX-XXXXXXXX-XXXX-XXXXXX

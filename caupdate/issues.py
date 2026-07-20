@@ -8,6 +8,7 @@ and field updates continue to go through python-jira.
 Functions take all needed values as explicit parameters (no globals).
 """
 
+import base64
 import requests
 from jira import JIRAError
 
@@ -24,18 +25,27 @@ bug_description = ('Update CA certificates to version %s from NSS %s and '
 
 class JiraSession:
     """
-    Thin wrapper around a Jira Cloud connection.  Carries both the python-jira
-    client (for transitions/updates) and raw credentials for v3 API calls
-    (search, create) that python-jira still sends to the now-removed v2 endpoints.
+    Thin wrapper around a Jira connection.  Carries both the python-jira
+    client (for transitions/updates) and raw credentials for v3 API calls.
+
+    Jira Cloud (*.atlassian.net) requires Basic Auth with email:token.
+    Jira Server/Data Center uses Bearer token auth.
     """
-    def __init__(self, client, url, token):
+    def __init__(self, client, url, token, user=None):
         self.client = client
         self.url    = url.rstrip('/')
         self.token  = token
+        self.user   = user
+        self.is_cloud = 'atlassian.net' in self.url
 
     def _headers(self):
+        if self.is_cloud and self.user:
+            creds = base64.b64encode(f'{self.user}:{self.token}'.encode()).decode()
+            auth  = f'Basic {creds}'
+        else:
+            auth = f'Bearer {self.token}'
         return {
-            'Authorization': f'Bearer {self.token}',
+            'Authorization': auth,
             'Content-Type':  'application/json',
             'Accept':        'application/json',
         }
@@ -67,7 +77,7 @@ class JiraSession:
         r.raise_for_status()
         return r.json()
 
-def make_jira_client(jira_url, jira_api_key):
+def make_jira_client(jira_url, jira_api_key, jira_user=None):
     """Initialise and return a JiraSession."""
     import jira as jiralib
     url = jira_url.rstrip('/')
@@ -88,8 +98,16 @@ def make_jira_client(jira_url, jira_api_key):
     except Exception as e:
         print(f'Warning: could not resolve Jira URL ({e}), using {url} as-is')
 
-    base_options     = {'server': url, 'verify': True}
-    constructor_args = {'options': base_options, 'token_auth': jira_api_key}
+    is_cloud = 'atlassian.net' in url
+    base_options = {'server': url, 'verify': True}
+    if is_cloud and jira_user:
+        # Jira Cloud: Basic Auth with email:api_token
+        constructor_args = {'options': base_options,
+                            'basic_auth': (jira_user, jira_api_key)}
+    else:
+        # Jira Server/Data Center: Bearer PAT
+        constructor_args = {'options': base_options, 'token_auth': jira_api_key}
+
     if 'stage' in url:
         print('staging instance')
         constructor_args['proxies'] = {
@@ -98,7 +116,7 @@ def make_jira_client(jira_url, jira_api_key):
         }
     try:
         client = jiralib.JIRA(**constructor_args)
-        return JiraSession(client, url, jira_api_key)
+        return JiraSession(client, url, jira_api_key, user=jira_user)
     except JIRAError as e:
         print(f'JIRA Error connecting to {url}: {e}')
     except Exception as e:
