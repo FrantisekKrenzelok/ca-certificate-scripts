@@ -308,13 +308,19 @@ def discover_fedora_releases():
 def discover_rhel_releases(errata_map, ga_list, min_major=8):
     """
     Return all active RHEL releases from the errata map, grouped and sorted
-    per major version.
+    per major version, newest first.
 
     Returns a list of dicts:
-      {'release': str, 'major': int, 'is_ga': bool}
+      {'release': str, 'major': int, 'is_ga': bool, 'direct_create': bool}
 
-    One entry per errata_map key that looks like rhel-X.Y[.Z] with major >= min_major.
-    The GA release for each major (as identified by ga_list) is flagged is_ga=True.
+    is_ga=True   — true GA release: create y-stream bug, request z-stream clones.
+    is_ga=False, direct_create=True  — latest release of a z-stream-only major
+                  (e.g. RHEL 8 which has no new GAs): create z-stream bug directly.
+    is_ga=False, direct_create=False — other z-streams: wait for cloned bug.
+
+    A major is considered "z-stream-only" when its latest errata product version
+    name contains '.Z.' (e.g. 'RHEL-8.10.0.Z.MAIN+EUS') — meaning no true GA
+    release is being shipped for that major any more.
     """
     by_major = {}
     for release in errata_map.keys():
@@ -327,13 +333,31 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
 
     result = []
     for major in sorted(by_major.keys(), reverse=True):
-        for release in sorted(by_major[major],
-                              key=lambda r: [safe_int(x) for x in r.split('-')[1].split('.')],
-                              reverse=True):
+        sorted_releases = sorted(
+            by_major[major],
+            key=lambda r: [safe_int(x) for x in r.split('-')[1].split('.')],
+            reverse=True)
+
+        # Determine if this major has a true GA by checking errata product names
+        has_true_ga = any(
+            (errata_map.get(r) or {}).get('name', '').endswith('.GA')
+            for r in sorted_releases
+        )
+
+        for i, release in enumerate(sorted_releases):
+            if has_true_ga:
+                is_ga        = release in ga_list
+                direct_create = False
+            else:
+                # z-stream-only major: create bug directly for the latest release
+                is_ga         = False
+                direct_create = (i == 0)
+
             result.append({
-                'release': release,
-                'major': major,
-                'is_ga': release in ga_list,
+                'release':       release,
+                'major':         major,
+                'is_ga':         is_ga,
+                'direct_create': direct_create,
             })
     return result
 

@@ -85,22 +85,30 @@ def cryptosvc_create_errata(component, fixversion, bugs):
 
 # ── release processing ────────────────────────────────────────────────────────
 
-def _handle_rhel(release, is_ga):
+def _handle_rhel(release, is_ga, direct_create=False):
     """Create/look up a RHEL Jira bug. Returns the bug key string."""
     if not Jira:
         return '0'
 
     if is_ga:
+        # True GA: create y-stream bug, then request z-stream clones
         bugnumber, issue = issue_lookup(Jira, release, ver, packages, year)
         if bugnumber == '0':
             bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=False, year=year)
-            # Only request clones on first creation, not on subsequent re-runs
             if issue is not None and safe_int(release_get_major(release)) > 8:
                 print(f'  requesting z-stream clones for all active {release} z-streams')
                 issue_request_clone(Jira, issue, dry_run=DRY_RUN)
+    elif direct_create:
+        # z-stream-only major (e.g. RHEL 8): create z-stream bug directly
+        bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
+        if bugnumber == '0':
+            bugnumber, _ = issue_create(
+                Jira, release, ver, nss_ver, firefox_version, mcs_ver,
+                packages, zstream=True, year=year)
     else:
+        # Other z-streams: wait for clone from GA bug
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
         if bugnumber == '0':
             print(f'  clone not yet available — will retry on next run')
@@ -248,10 +256,17 @@ if mode == 'rhel':
     if not discovered:
         print('WARNING: no active RHEL releases found in errata map')
     for item in discovered:
-        release = item['release']
-        is_ga   = item['is_ga']
-        print(f'{release}: {"GA" if is_ga else "z-stream"}')
-        bugnumber = _handle_rhel(release, is_ga)
+        release       = item['release']
+        is_ga         = item['is_ga']
+        direct_create = item['direct_create']
+        if is_ga:
+            label = 'GA'
+        elif direct_create:
+            label = 'z-stream (direct, no GA for this major)'
+        else:
+            label = 'z-stream'
+        print(f'{release}: {label}')
+        bugnumber = _handle_rhel(release, is_ga, direct_create)
         print(f'  bug={bugnumber}')
         _maybe_create_crypto_epic(release, bugnumber)
         rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
