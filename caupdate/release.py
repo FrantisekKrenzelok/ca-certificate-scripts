@@ -305,6 +305,10 @@ def discover_fedora_releases():
                          key=lambda r: int(r[1:]), reverse=True)
     return ['rawhide'] + fedora_nums
 
+def is_sustaining_release(pv_name):
+    """Return True if the errata product name indicates a Sustaining Engineering stream."""
+    return any(x in pv_name for x in ('E4S', 'AUS', 'TUS'))
+
 def _relevant_release(pv_name, is_head):
     """
     Return True if this release should receive a ca-certificates update.
@@ -379,10 +383,11 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
                 continue
 
             result.append({
-                'release':     release,
-                'major':       major,
-                'is_ga':       is_ga,
-                'use_zstream': use_zstream,
+                'release':        release,
+                'major':          major,
+                'is_ga':          is_ga,
+                'use_zstream':    use_zstream,
+                'is_sustaining':  is_sustaining_release(pv_name),
             })
     return result
 

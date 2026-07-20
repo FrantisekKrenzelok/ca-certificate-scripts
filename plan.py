@@ -96,7 +96,7 @@ def cryptosvc_create_errata(component, fixversion, bugs, description=''):
 
 # ── release processing ────────────────────────────────────────────────────────
 
-def _handle_rhel(release, is_ga, use_zstream=False):
+def _handle_rhel(release, is_ga, use_zstream=False, is_sustaining=False):
     """Create/look up a RHEL Jira bug. Returns the bug key string.
 
     is_ga=True  — head release (true GA or head of z-stream-only major):
@@ -141,6 +141,43 @@ def _get_epic_from_rhel_bug(bugnumber):
         print(f'  WARNING: could not read epic link on {bugnumber}: {e}')
     return None
 
+def _resolve_jira_account(email):
+    """Resolve an email address to a Jira Cloud accountId."""
+    if not Jira:
+        return None
+    try:
+        r = requests.get(f'{Jira.url}/rest/api/3/user/search',
+                         params={'query': email},
+                         headers=Jira._headers(), timeout=30)
+        users = r.json()
+        if users:
+            return users[0].get('accountId')
+    except Exception as e:
+        print(f'  WARNING: could not resolve {email} to accountId: {e}')
+    return None
+
+def _set_crypto_se_contact(crypto_key):
+    """Set the SE contact as QA contact (customfield_10470) on a CRYPTO epic."""
+    if not (Jira and se_contact and crypto_key and crypto_key not in ('0', 'DRY-CRYPTO-0')):
+        return
+    if DRY_RUN:
+        print(f'  DRY_RUN: would set SE contact {se_contact} on {crypto_key}')
+        return
+    account_id = _resolve_jira_account(se_contact)
+    if not account_id:
+        print(f'  WARNING: could not resolve SE contact {se_contact}')
+        return
+    payload = {'fields': {'customfield_10470': {'accountId': account_id}}}
+    try:
+        r = requests.put(f'{Jira.url}/rest/api/3/issue/{crypto_key}',
+                         json=payload, headers=Jira._headers(), timeout=30)
+        if r.status_code == 204:
+            print(f'  set SE contact {se_contact} on {crypto_key}')
+        else:
+            print(f'  WARNING: could not set SE contact on {crypto_key}: {r.status_code} {r.text[:120]}')
+    except Exception as e:
+        print(f'  WARNING: set SE contact failed for {crypto_key}: {e}')
+
 def _set_crypto_parent(crypto_key):
     """Set crypto_epic_parent as the parent of a CRYPTO epic."""
     if not (Jira and crypto_epic_parent and crypto_key and crypto_key not in ('0', 'DRY-CRYPTO-0')):
@@ -159,7 +196,7 @@ def _set_crypto_parent(crypto_key):
     except Exception as e:
         print(f'  WARNING: set parent failed for {crypto_key}: {e}')
 
-def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
+def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False, is_sustaining=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
         return None
     if bugnumber in ('0', 'DRY-0'):
@@ -183,6 +220,8 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
         print(f'  CRYPTO epic: {key}')
         crypto_map[release] = key
         _set_crypto_parent(key)
+        if is_sustaining and se_contact:
+            _set_crypto_se_contact(key)
     return key
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -210,6 +249,7 @@ cryptosvc_url          = None
 cryptosvc_access_token = None
 cryptosvc_pat          = None
 crypto_epic_parent     = None
+se_contact             = None
 config = {}
 
 for config_line in open(config_file, 'r'):
@@ -231,6 +271,7 @@ for config_line in open(config_file, 'r'):
     if key == 'cryptosvc_access_token':   cryptosvc_access_token = value
     if key == 'cryptosvc_pat':            cryptosvc_pat = value
     if key == 'crypto_epic_parent':       crypto_epic_parent = value
+    if key == 'se_contact':               se_contact = value
     if key == 'dry_run':
         DRY_RUN = value.lower() == 'true'
 
@@ -331,19 +372,23 @@ if mode == 'rhel':
     if not discovered:
         print('WARNING: no active RHEL releases found in errata map')
     for item in discovered:
-        release      = item['release']
-        is_ga        = item['is_ga']
-        use_zstream  = item['use_zstream']
+        release         = item['release']
+        is_ga           = item['is_ga']
+        use_zstream     = item['use_zstream']
+        is_sustaining   = item['is_sustaining']
         if is_ga and not use_zstream:
             label = 'GA'
         elif is_ga and use_zstream:
             label = 'GA (z-stream-only major)'
         else:
             label = 'z-stream'
+        if is_sustaining:
+            label += ' [SE]'
         print(f'{release}: {label}')
-        bugnumber = _handle_rhel(release, is_ga, use_zstream)
+        bugnumber = _handle_rhel(release, is_ga, use_zstream, is_sustaining)
         print(f'  bug={bugnumber}')
-        crypto_key = _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga) or ''
+        crypto_key = _maybe_create_crypto_epic(release, bugnumber,
+                         is_zstream=not is_ga, is_sustaining=is_sustaining) or ''
 
         # Merge with existing rhel.list entry, preserving pipeline progress
         if release in existing_rhel:

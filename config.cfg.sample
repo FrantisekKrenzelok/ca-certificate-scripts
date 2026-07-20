@@ -13,6 +13,7 @@ glab_api_key:XXXXX-XXXXXXXX-XXXX-XXXXXX
 #   and saving your Jira API key there once.
 cryptosvc_url:https://sec-crypto.users.ipa.redhat.com/cryptosvc
 crypto_epic_parent:CRYPTO-19515
+se_contact:sustaining-eng@redhat.com
 cryptosvc_access_token:xxAccessTokenFromCryptosvcAdmin
 cryptosvc_pat:eyJhbGciOiJBMjU2S1ciLCJlbmMiOiJBMjU2Q0JDLUhTNTEyIn0...
 #firefox:91
