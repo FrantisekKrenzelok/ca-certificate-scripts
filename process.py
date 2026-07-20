@@ -189,7 +189,8 @@ def _issue_get_state(issue):
     return issue_get_state(issue)
 
 def _issue_change_state(issue, state):
-    return issue_change_state(Jira, issue, state)
+    key = issue if isinstance(issue, str) else issue.get('key', issue)
+    return issue_change_state(Jira, key, state)
 
 #
 #    Errata helper function
