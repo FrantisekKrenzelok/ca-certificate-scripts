@@ -75,11 +75,14 @@ def issue_lookup(Jira, release, version, packages, year, zstream=False):
 
     return issues[0].key, issues[0]
 
-def issue_request_clone(Jira, release, version, packages, year):
+def issue_request_clone(Jira, release, version, packages, year, dry_run=False):
     """Request a z-stream bug clone for the given GA release bug."""
     _, issue = issue_lookup(Jira, release, version, packages, year)
     if issue is None:
         return False
+    if dry_run:
+        print(f'  DRY_RUN: would request z-stream clone for {issue.key}')
+        return True
     try:
         issue.update({'customfield_12323242': {'id': '33996'}})
     except JIRAError as e:

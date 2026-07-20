@@ -155,13 +155,20 @@ year = datetime.date.today().strftime('%Y')
 
 # ── errata map ────────────────────────────────────────────────────────────────
 
-errata_map, ga_list, _ = load_errata_map(
-    errata_url_base, errata_cache_file, ca_certs_file, force_resync=resync)
+try:
+    errata_map, ga_list, _ = load_errata_map(
+        errata_url_base, errata_cache_file, ca_certs_file, force_resync=resync)
+except Exception as e:
+    if DRY_RUN:
+        print(f'WARNING: could not load errata map ({e}); discovery will be empty')
+        errata_map, ga_list = {}, []
+    else:
+        raise
 
 # ── Jira client ───────────────────────────────────────────────────────────────
 
 Jira = None
-if jira_api_key:
+if jira_api_key and not DRY_RUN:
     Jira = make_jira_client(jira_url_base, jira_api_key)
 
 # ── cryptosvc PAT ─────────────────────────────────────────────────────────────
@@ -217,7 +224,7 @@ def _handle_rhel(release, is_ga):
             major = safe_int(release_get_major(release))
             if major > 8:
                 print(f'  requesting z-stream clones for all active {release} z-streams')
-                issue_request_clone(Jira, release, ver, packages, year)
+                issue_request_clone(Jira, release, ver, packages, year, dry_run=DRY_RUN)
     else:
         # Z-stream: look up the cloned bug (created asynchronously by Jira)
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
