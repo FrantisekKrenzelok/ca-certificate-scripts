@@ -42,6 +42,7 @@ from caupdate.issues import (
     issue_create, issue_lookup, issue_request_clone,
     make_jira_client,
 )
+from caupdate.versions import fetch_nss_versions, NSS_BASE_URL
 
 DRY_RUN = False
 
@@ -191,8 +192,19 @@ if firefox_version is None and mode == 'rhel':
     sys.exit(2)
 firefox_version = firefox_version or 'unknown'
 
-year    = datetime.date.today().strftime('%Y')
+year     = datetime.date.today().strftime('%Y')
 packages = 'ca-certificates'
+
+# Auto-fetch NSS/CKBI versions from Mozilla if not supplied on CLI/config
+if mode == 'rhel' and (nss_version is None or version is None):
+    try:
+        auto_nss, auto_ckbi = fetch_nss_versions()
+        nss_version = nss_version or auto_nss
+        version     = version     or auto_ckbi
+    except Exception as e:
+        print(f'WARNING: could not fetch NSS versions from Mozilla ({e})')
+        print('         Use -n <nss_version> and -v <ckbi_version> to set them manually.')
+
 ver     = version     or config.get('version',      'unknown')
 nss_ver = nss_version or config.get('nss_version',  'unknown')
 mcs_ver = mcs_version or config.get('mcs_version',  'unknown')
