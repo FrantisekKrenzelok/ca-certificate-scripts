@@ -156,12 +156,12 @@ def _resolve_jira_account(email):
         print(f'  WARNING: could not resolve {email} to accountId: {e}')
     return None
 
-def _set_crypto_se_contact(crypto_key):
-    """Set the SE contact as QA contact (customfield_10470) on a CRYPTO epic."""
-    if not (Jira and se_contact and crypto_key and crypto_key not in ('0', 'DRY-CRYPTO-0')):
+def _set_rhel_qa_contact(bugnumber):
+    """Set the SE contact as QA contact (customfield_10470) on the RHEL bug."""
+    if not (Jira and se_contact and bugnumber and bugnumber not in ('0', 'DRY-0')):
         return
     if DRY_RUN:
-        print(f'  DRY_RUN: would set SE contact {se_contact} on {crypto_key}')
+        print(f'  DRY_RUN: would set SE contact {se_contact} as QA on {bugnumber}')
         return
     account_id = _resolve_jira_account(se_contact)
     if not account_id:
@@ -169,14 +169,14 @@ def _set_crypto_se_contact(crypto_key):
         return
     payload = {'fields': {'customfield_10470': {'accountId': account_id}}}
     try:
-        r = requests.put(f'{Jira.url}/rest/api/3/issue/{crypto_key}',
+        r = requests.put(f'{Jira.url}/rest/api/3/issue/{bugnumber}',
                          json=payload, headers=Jira._headers(), timeout=30)
         if r.status_code == 204:
-            print(f'  set SE contact {se_contact} on {crypto_key}')
+            print(f'  set SE contact {se_contact} as QA on {bugnumber}')
         else:
-            print(f'  WARNING: could not set SE contact on {crypto_key}: {r.status_code} {r.text[:120]}')
+            print(f'  WARNING: could not set QA on {bugnumber}: {r.status_code} {r.text[:120]}')
     except Exception as e:
-        print(f'  WARNING: set SE contact failed for {crypto_key}: {e}')
+        print(f'  WARNING: set QA on {bugnumber} failed: {e}')
 
 def _set_crypto_parent(crypto_key):
     """Set crypto_epic_parent as the parent of a CRYPTO epic."""
@@ -196,7 +196,7 @@ def _set_crypto_parent(crypto_key):
     except Exception as e:
         print(f'  WARNING: set parent failed for {crypto_key}: {e}')
 
-def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False, is_sustaining=False):
+def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
         return None
     if bugnumber in ('0', 'DRY-0'):
@@ -220,8 +220,6 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False, is_sustainin
         print(f'  CRYPTO epic: {key}')
         crypto_map[release] = key
         _set_crypto_parent(key)
-        if is_sustaining and se_contact:
-            _set_crypto_se_contact(key)
     return key
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -387,8 +385,13 @@ if mode == 'rhel':
         print(f'{release}: {label}')
         bugnumber = _handle_rhel(release, is_ga, use_zstream, is_sustaining)
         print(f'  bug={bugnumber}')
-        crypto_key = _maybe_create_crypto_epic(release, bugnumber,
-                         is_zstream=not is_ga, is_sustaining=is_sustaining) or ''
+        if is_sustaining:
+            # SE releases: no CRYPTO epic — set SE contact as QA on the RHEL bug
+            _set_rhel_qa_contact(bugnumber)
+            crypto_key = ''
+        else:
+            crypto_key = _maybe_create_crypto_epic(release, bugnumber,
+                             is_zstream=not is_ga) or ''
 
         # Merge with existing rhel.list entry, preserving pipeline progress
         if release in existing_rhel:
