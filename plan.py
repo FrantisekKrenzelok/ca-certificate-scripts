@@ -126,19 +126,18 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
 
     return bugnumber
 
-def _search_crypto_epic(fixversion):
-    """Search CRYPTO Jira for an existing errata epic for this fixversion."""
-    if not Jira:
+def _get_epic_from_rhel_bug(bugnumber):
+    """Read the CRYPTO epic key from the RHEL bug's EPICLINK field (customfield_10014).
+    cryptosvc sets this on the RHEL bug when it creates the CRYPTO epic."""
+    if not Jira or bugnumber in ('0', 'DRY-0'):
         return None
-    jql = (f'project=CRYPTO AND issuetype=Epic AND labels=Errata '
-           f'AND component="{packages}" AND fixVersion="{fixversion}" '
-           f'AND statusCategory != Done')
     try:
-        issues = Jira.search(jql, fields=['key', 'summary'], max_results=5)
-        if issues:
-            return issues[0]['key']
+        issue = Jira.get(bugnumber)
+        epic_key = issue.get('fields', {}).get('customfield_10014')
+        if epic_key and str(epic_key).startswith('CRYPTO-'):
+            return str(epic_key)
     except Exception as e:
-        print(f'  WARNING: CRYPTO epic search failed: {e}')
+        print(f'  WARNING: could not read epic link on {bugnumber}: {e}')
     return None
 
 def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
@@ -149,11 +148,10 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if release in crypto_map:
         print(f'  CRYPTO epic already exists: {crypto_map[release]}')
         return crypto_map[release]
-    fixversion = jira_fixversion(release) + ('.z' if is_zstream else '')
-    # Search before creating to avoid duplicates
-    existing = _search_crypto_epic(fixversion)
+    # Check the RHEL bug's epic link before calling cryptosvc
+    existing = _get_epic_from_rhel_bug(bugnumber)
     if existing:
-        print(f'  CRYPTO epic found in Jira: {existing}')
+        print(f'  CRYPTO epic found via RHEL bug link: {existing}')
         crypto_map[release] = existing
         return existing
     description = (bug_summary_short % year) + (
