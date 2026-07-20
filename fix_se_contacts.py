@@ -146,7 +146,7 @@ for parts in entries:
             continue
         print(f'{release}: setting assignee={qe} on QA sub-issues of {crypto_key}')
         summaries = '", "'.join(QA_SUMMARIES)
-        jql = f'project=CRYPTO AND parent="{crypto_key}" AND summary in ("{summaries}")'
+        jql = f'project=CRYPTO AND "Epic Link" = "{crypto_key}" AND summary in ("{summaries}")'
         try:
             sub_issues = Jira.search(jql, fields=['key', 'summary'], max_results=10)
         except Exception as e:
