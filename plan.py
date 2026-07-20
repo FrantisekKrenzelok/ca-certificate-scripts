@@ -58,19 +58,6 @@ ca_certs_file     = CA_CERTS_FILE
 
 # ── cryptosvc helpers ─────────────────────────────────────────────────────────
 
-def make_pat(pat_key_json, jira_user, jira_api_key):
-    """Encrypt Jira credentials as a JWE PAT for cryptosvc."""
-    try:
-        from jwcrypto.common import json_encode
-        from jwcrypto import jwk, jwe
-    except ImportError:
-        raise RuntimeError("jwcrypto is required for cryptosvc integration: pip install jwcrypto")
-    key = jwk.JWK(**json.loads(pat_key_json))
-    token = jwe.JWE(
-        json_encode({'user': jira_user, 'apikey': jira_api_key}),
-        json_encode({'alg': 'A256KW', 'enc': 'A256CBC-HS512'}))
-    token.add_recipient(key)
-    return token.serialize(compact=True)
 
 def cryptosvc_create_errata(component, fixversion, bugs):
     """Call the existing cryptosvc /jira/errata/create endpoint."""
@@ -146,10 +133,9 @@ mcs_version     = None
 owner           = None
 manager         = None
 jira_api_key    = None
-jira_user       = None
 cryptosvc_url          = None
 cryptosvc_access_token = None
-cryptosvc_pat_key      = None
+cryptosvc_pat          = None
 config = {}
 
 for config_line in open(config_file, 'r'):
@@ -163,13 +149,12 @@ for config_line in open(config_file, 'r'):
     if key == 'manager':                  manager = value
     if key == 'jira_url':                 jira_url_base = value
     if key == 'jira_api_key':             jira_api_key = value
-    if key == 'jira_user':                jira_user = value
     if key == 'errata_url':               errata_url_base = value
     if key == 'version':                  version = value
     if key == 'firefox':                  firefox_version = value
     if key == 'cryptosvc_url':            cryptosvc_url = value
     if key == 'cryptosvc_access_token':   cryptosvc_access_token = value
-    if key == 'cryptosvc_pat_key':        cryptosvc_pat_key = value
+    if key == 'cryptosvc_pat':            cryptosvc_pat = value
     if key == 'dry_run':
         DRY_RUN = value.lower() == 'true'
 
@@ -231,15 +216,6 @@ if mode == 'rhel':
 Jira = None
 if mode == 'rhel' and jira_api_key and not DRY_RUN:
     Jira = make_jira_client(jira_url_base, jira_api_key)
-
-# ── cryptosvc PAT ─────────────────────────────────────────────────────────────
-
-cryptosvc_pat = None
-if cryptosvc_url and cryptosvc_pat_key and jira_user and jira_api_key:
-    try:
-        cryptosvc_pat = make_pat(cryptosvc_pat_key, jira_user, jira_api_key)
-    except Exception as e:
-        print(f'WARNING: could not generate cryptosvc PAT: {e}')
 
 # ── wipe and recreate meta/ ───────────────────────────────────────────────────
 

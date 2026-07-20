@@ -5,4 +5,3 @@ python-gitlab
 jira
 asn1
 gitpython
-jwcrypto
