@@ -202,7 +202,7 @@ def issue_lookup(session, release, version, packages, year, zstream=False):
     return issues[0]['key'], issues[0]
 
 def issue_request_clone(session, issue_or_key, dry_run=False):
-    """Request 'Clone for all active z-streams' on a GA issue."""
+    """Request 'Clone for all active z-streams' on a GA issue via customfield_10941."""
     key = issue_or_key if isinstance(issue_or_key, str) else issue_or_key['key']
     if dry_run:
         print(f'  DRY_RUN: would request z-stream clone for {key}')

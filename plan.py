@@ -109,7 +109,7 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=False, year=year)
             if issue is not None and safe_int(release_get_major(release)) > 8:
-                print(f'  requesting z-stream clones for all active {release} z-streams')
+                print(f'  requesting z-stream clones for {release}')
                 issue_request_clone(Jira, issue, dry_run=DRY_RUN)
     elif latest_z_stream:
         # z-stream-only major (e.g. RHEL 8): create z-stream bug directly
