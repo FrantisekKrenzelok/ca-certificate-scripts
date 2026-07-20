@@ -136,13 +136,19 @@ def _adf(text):
 
 # ── issue CRUD ────────────────────────────────────────────────────────────────
 
+def _jira_fixversion(release):
+    """
+    Convert errata-map release name to Jira fixVersion name.
+    The errata map uses rhel-X.Y.0 but Jira uses rhel-X.Y (no trailing .0).
+    """
+    import re
+    return re.sub(r'^(rhel-\d+\.\d+)\.0$', r'\1', release)
+
 def issue_create(session, release, version, nss_version, firefox_version,
                  mcs_version, packages, zstream, year):
     """Create a new RHEL Jira bug. Returns (key, raw_dict) or ('0', None)."""
     package = packages.split(',')[0]
-
-    if release == 'rhel-8.10.0':   # Jira uses rhel-8.10, not rhel-8.10.0
-        release = 'rhel-8.10'
+    release = _jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
 
     if zstream:
         release += '.z'
@@ -171,6 +177,7 @@ def issue_lookup(session, release, version, packages, year, zstream=False):
     """Look up an existing RHEL Jira bug. Returns (key, raw_dict) or ('0', None)."""
     package = packages.split(',')[0]
     summary = bug_summary_short % year
+    release = _jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
 
     if zstream:
         release += '.z'
@@ -204,7 +211,8 @@ def issue_request_clone(session, issue_or_key, dry_run=False):
         jira_issue = session.client.issue(key)
         jira_issue.update({'customfield_12323242': {'id': '33996'}})
     except JIRAError as e:
-        print(e)
+        # Field may not be on the screen in all Jira configurations
+        print(f'  WARNING: clone request on {key} failed (field not available?): {e.text}')
         return False
     return True
 
