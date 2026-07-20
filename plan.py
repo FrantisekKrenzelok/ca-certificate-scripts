@@ -39,7 +39,7 @@ from caupdate.release import (
 )
 from caupdate.issues import (
     issue_create, issue_lookup, issue_request_clone,
-    make_jira_client, jira_fixversion,
+    make_jira_client, jira_fixversion, bug_summary_short,
 )
 from caupdate.versions import fetch_nss_versions, NSS_BASE_URL
 
