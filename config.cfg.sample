@@ -3,8 +3,13 @@ manager:package_owner_manager@redhat.com
 qe:package_qe@redhat.com
 jira_url:https://issues.redhat.com
 jira_api_key:xxStringFromJiraProfilePersonalAccessTokens
+jira_user:your-jira-username
 centos_fork:git@gitlab.com:package_owner/ca-certificates.git
 glab_url_base:https://gitlab.com/
 glab_api_key:XXXXX-XXXXXXXX-XXXX-XXXXXX
+# cryptosvc integration (used by plan.py to create CRYPTO errata epics)
+cryptosvc_url:https://sec-crypto.users.ipa.redhat.com/cryptosvc
+cryptosvc_access_token:xxAccessTokenFromCryptosvcAdmin
+cryptosvc_pat_key:{"kty":"oct","k":"<base64url-key-from-cryptosvc-config>"}
 #firefox:91
 #version:2.48

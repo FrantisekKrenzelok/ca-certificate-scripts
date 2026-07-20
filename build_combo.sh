@@ -254,6 +254,16 @@ cacertificates_update()
    return 0
 }
 
+set_list_state() {
+    local file=$1 release=$2 new_state=$3
+    if grep -q "^${release}:" "${file}" 2>/dev/null; then
+        # field 6 (1-indexed) is the state; preserve everything else
+        sed -i "s|^\(${release}:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*\(.*\)|\1${new_state}\2|" "${file}"
+    else
+        echo "WARNING: ${release} not found in ${file}" >&2
+    fi
+}
+
 trap finish EXIT
 #
 # Parse the arguments
@@ -322,10 +332,11 @@ CENTOS_LIST=()
 echo "******************************************************************"
 echo "*                   Setting up directories                       *"
 echo "******************************************************************"
-rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS} ${META_DATA}
+rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS}
+# META_DATA is owned by plan.py; do not wipe it here
+mkdir -p ${META_DATA}
 mkdir -p ${PACKAGES}
 mkdir -p ${CACERTS}
-mkdir -p ${META_DATA}
 if [ -n "${RHEL8}" ]; then
     mkdir -p ${MODIFIED}/rhel8/ca-certificates
     CENTOS_LIST+=( "8" )
@@ -342,8 +353,6 @@ if [ -n "${FEDORA}" ]; then
     mkdir -p ${MODIFIED}/fedora/ca-certificates
     mkdir -p ${PACKAGES}/fedora
 fi
-touch ${RHEL_LIST}
-touch ${FEDORA_LIST}
 
 if [[ ${#CENTOS_LIST[@]} -gt 0 ]]; then
     mkdir -p ${PACKAGES}/centos
@@ -510,7 +519,7 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel8/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "80.0" "81"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
+   set_list_state "${RHEL_LIST}" "$i" "staged"
 done
 for i in ${RHEL9}
 do
@@ -522,7 +531,7 @@ do
       cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
    fi
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
+   set_list_state "${RHEL_LIST}" "$i" "staged"
 done
 for i in ${RHEL10}
 do
@@ -534,14 +543,14 @@ do
       cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "100.0" "101"
    fi
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged:: >> ${RHEL_LIST}
+   set_list_state "${RHEL_LIST}" "$i" "staged"
 done
 for i in ${FEDORA}
 do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/fedora/ca-certificates/$i ${MODIFIED}/fedora/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "1.0" "2"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates:0:0::staged >> ${FEDORA_LIST}
+   set_list_state "${FEDORA_LIST}" "$i" "staged"
 done
 echo "Finished updates for ca-certificates ${cki_version} from NSS ${nss_version} with ${errors} errors"
 cd ${SCRIPT_LOC}
