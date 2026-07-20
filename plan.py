@@ -62,7 +62,9 @@ ca_certs_file     = CA_CERTS_FILE
 
 
 def cryptosvc_create_errata(component, fixversion, bugs, description=''):
-    """Call the existing cryptosvc /jira/errata/create endpoint."""
+    """Call the existing cryptosvc /jira/errata/create endpoint.
+    Returns the CRYPTO issue key string on success, None on failure."""
+    import re as _re
     url = cryptosvc_url.rstrip('/') + '/jira/errata/create'
     headers = {
         'Access-Token': cryptosvc_access_token,
@@ -78,16 +80,20 @@ def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     }
     if DRY_RUN:
         print(f'  DRY_RUN: POST {url} {body}')
-        return True
+        return 'DRY-CRYPTO-0'
     r = requests.post(url, headers=headers, json=body, timeout=30,
                       verify=ca_certs_file, auth=HTTPKerberosAuth())
     if r.status_code == 409:
         print(f'  CRYPTO errata epic already exists for {component}/{fixversion}')
-        return True
+        return None
     if r.status_code > 299:
-        print(f'  cryptosvc errata create failed: {r.status_code} {r.text}')
-        return False
-    return True
+        print(f'  cryptosvc errata create failed: {r.status_code} {r.text[:200]}')
+        return None
+    m = _re.search(r'id="div-(CRYPTO-\d+)"', r.text)
+    if m:
+        return m.group(1)
+    print(f'  WARNING: could not parse CRYPTO key from response')
+    return None
 
 # ── release processing ────────────────────────────────────────────────────────
 
@@ -123,15 +129,22 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
 
 def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
-        return
+        return None
     if bugnumber in ('0', 'DRY-0'):
-        return
+        return None
+    if release in crypto_map:
+        print(f'  CRYPTO epic already exists: {crypto_map[release]}')
+        return crypto_map[release]
     fixversion = jira_fixversion(release) + ('.z' if is_zstream else '')
     description = (bug_summary_short % year) + (
         f' version {ver} from NSS {nss_ver} for Firefox {firefox_version}'
         f' and Microsoft {mcs_ver}')
     print(f'  creating CRYPTO errata epic for {packages}/{fixversion}')
-    cryptosvc_create_errata(packages, fixversion, [bugnumber], description)
+    key = cryptosvc_create_errata(packages, fixversion, [bugnumber], description)
+    if key:
+        print(f'  CRYPTO epic: {key}')
+        crypto_map[release] = key
+    return key
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 
@@ -240,6 +253,14 @@ if mode == 'rhel' and jira_api_key and not DRY_RUN:
 
 # ── wipe and recreate meta/ ───────────────────────────────────────────────────
 
+# Load existing crypto keys from rhel.list before wiping — preserved across runs
+crypto_map = {}  # release → CRYPTO key
+if os.path.exists(rhel_list):
+    for line in open(rhel_list):
+        parts = line.strip().split(':')
+        if len(parts) >= 9 and parts[8]:
+            crypto_map[parts[0]] = parts[8]
+
 if not DRY_RUN:
     if os.path.exists(meta_dir):
         shutil.rmtree(meta_dir)
@@ -277,8 +298,8 @@ if mode == 'rhel':
         print(f'{release}: {label}')
         bugnumber = _handle_rhel(release, is_ga, latest_z_stream)
         print(f'  bug={bugnumber}')
-        _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga)
-        rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
+        crypto_key = _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga) or ''
+        rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', '', crypto_key))
 
 elif mode == 'fedora':
     try:
@@ -308,12 +329,13 @@ if not DRY_RUN:
 # ── summary ───────────────────────────────────────────────────────────────────
 
 print('\n=== Summary ===\n')
-print(f'{"Release":<25} {"Bug":<15} {"State"}')
-print('-' * 50)
+print(f'{"Release":<25} {"Bug":<15} {"CRYPTO":<15} {"State"}')
+print('-' * 62)
 for entry in rhel_entries:
-    print(f'{entry[0]:<25} {entry[2]:<15} {entry[5]}')
+    crypto = crypto_map.get(entry[0], '')
+    print(f'{entry[0]:<25} {entry[2]:<15} {crypto:<15} {entry[5]}')
 for entry in fedora_entries:
-    print(f'{entry[0]:<25} {"(none)":<15} {entry[5]}')
+    print(f'{entry[0]:<25} {"(none)":<15} {"":15} {entry[5]}')
 
 if DRY_RUN:
     print('\n(dry run — no changes written)')

@@ -915,7 +915,8 @@ fedora_packages = {}
 #
 #######################################################
 for rhel_entry in open(rhel_list, 'r'):
-    (release, packages, bugnumber, erratanumber, nvr, state, glmr, glupstream) = rhel_entry.strip().split(':')
+    fields = rhel_entry.strip().split(':')
+    (release, packages, bugnumber, erratanumber, nvr, state, glmr, glupstream) = fields[:8]
     entry=dict()
     print('release=',release,'packages=',packages,'bugnumber=',bugnumber,'erratanumber=',erratanumber,'nvr=',nvr,'state=',state)
     entry['packages']=packages
@@ -925,6 +926,7 @@ for rhel_entry in open(rhel_list, 'r'):
     entry['state']=state
     entry['glmr']=glmr
     entry['glupstream']=glupstream
+    entry['crypto']=fields[8] if len(fields) > 8 else ''
     rhel_packages[release]=entry
 
 for fedora_entry in open(fedora_list, 'r'):
@@ -1186,9 +1188,9 @@ for release in rhel_packages :
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
-    f.write("%s:%s:%s:%d:%s:%s:%s:%s\n"%(release,packages,bugnumber,
+    f.write("%s:%s:%s:%d:%s:%s:%s:%s:%s\n"%(release,packages,bugnumber,
             erratanumber,entry['nvr'],entry['state'],
-            entry['glupstream'], entry['glmr']))
+            entry['glupstream'], entry['glmr'], entry.get('crypto','')))
 f.close()
 print("Updating %s"%fedora_list)
 f = open(fedora_list,"w")
