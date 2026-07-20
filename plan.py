@@ -23,7 +23,6 @@
 
 import os
 import sys
-import shutil
 import getopt
 import json
 import datetime
@@ -127,6 +126,21 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
 
     return bugnumber
 
+def _search_crypto_epic(fixversion):
+    """Search CRYPTO Jira for an existing errata epic for this fixversion."""
+    if not Jira:
+        return None
+    jql = (f'project=CRYPTO AND issuetype=Epic AND labels=Errata '
+           f'AND component="{packages}" AND fixVersion="{fixversion}" '
+           f'AND statusCategory != Done')
+    try:
+        issues = Jira.search(jql, fields=['key', 'summary'], max_results=5)
+        if issues:
+            return issues[0]['key']
+    except Exception as e:
+        print(f'  WARNING: CRYPTO epic search failed: {e}')
+    return None
+
 def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
         return None
@@ -136,6 +150,12 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
         print(f'  CRYPTO epic already exists: {crypto_map[release]}')
         return crypto_map[release]
     fixversion = jira_fixversion(release) + ('.z' if is_zstream else '')
+    # Search before creating to avoid duplicates
+    existing = _search_crypto_epic(fixversion)
+    if existing:
+        print(f'  CRYPTO epic found in Jira: {existing}')
+        crypto_map[release] = existing
+        return existing
     description = (bug_summary_short % year) + (
         f' version {ver} from NSS {nss_ver} for Firefox {firefox_version}'
         f' and Microsoft {mcs_ver}')
@@ -251,20 +271,22 @@ Jira = None
 if mode == 'rhel' and jira_api_key and not DRY_RUN:
     Jira = make_jira_client(jira_url_base, jira_api_key, jira_user=jira_user)
 
-# ── wipe and recreate meta/ ───────────────────────────────────────────────────
+# ── load existing meta state ──────────────────────────────────────────────────
 
-# Load existing crypto keys from rhel.list before wiping — preserved across runs
-crypto_map = {}  # release → CRYPTO key
+# Load existing rhel.list so we can merge rather than overwrite.
+# The user is responsible for wiping rhel.list when starting a fresh cycle.
+existing_rhel = {}   # release → 9-tuple of field strings
+crypto_map    = {}   # release → CRYPTO key
 if os.path.exists(rhel_list):
     for line in open(rhel_list):
         parts = line.strip().split(':')
-        if len(parts) >= 9 and parts[8]:
-            crypto_map[parts[0]] = parts[8]
+        if len(parts) >= 8:
+            existing_rhel[parts[0]] = parts
+            if len(parts) >= 9 and parts[8]:
+                crypto_map[parts[0]] = parts[8]
 
 if not DRY_RUN:
-    if os.path.exists(meta_dir):
-        shutil.rmtree(meta_dir)
-    os.makedirs(meta_dir)
+    os.makedirs(meta_dir, exist_ok=True)
     for fname, val in [(ckbiver_file, ver),
                        (nssver_file,  nss_ver),
                        (mcsver_file,  mcs_ver),
@@ -272,7 +294,7 @@ if not DRY_RUN:
         with open(fname, 'w') as f:
             f.write(val)
 else:
-    print('DRY_RUN: would wipe and recreate meta/')
+    print('DRY_RUN: meta/ preserved, version files would be updated')
 
 # ── discover and process ──────────────────────────────────────────────────────
 
@@ -299,7 +321,27 @@ if mode == 'rhel':
         bugnumber = _handle_rhel(release, is_ga, latest_z_stream)
         print(f'  bug={bugnumber}')
         crypto_key = _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga) or ''
-        rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', '', crypto_key))
+
+        # Merge with existing rhel.list entry, preserving pipeline progress
+        if release in existing_rhel:
+            prev = existing_rhel[release]
+            # Only update bugnumber and crypto if newly obtained
+            merged_bug    = bugnumber if bugnumber != '0' else prev[2]
+            merged_errata = prev[3]
+            merged_nvr    = prev[4]
+            merged_state  = prev[5]
+            merged_glmr   = prev[6]
+            merged_glup   = prev[7]
+            merged_crypto = crypto_key or (prev[8] if len(prev) > 8 else '')
+        else:
+            merged_bug, merged_errata = bugnumber, '0'
+            merged_nvr, merged_state  = '', 'planned'
+            merged_glmr, merged_glup  = '', ''
+            merged_crypto             = crypto_key
+
+        rhel_entries.append((release, packages, merged_bug, merged_errata,
+                             merged_nvr, merged_state, merged_glmr,
+                             merged_glup, merged_crypto))
 
 elif mode == 'fedora':
     try:
