@@ -305,6 +305,25 @@ def discover_fedora_releases():
                          key=lambda r: int(r[1:]), reverse=True)
     return ['rawhide'] + fedora_nums
 
+def _relevant_release(pv_name, is_head):
+    """
+    Return True if this release should receive a ca-certificates update.
+    Always keep the head (latest) of each major.
+    For others, keep MAIN+EUS, E4S, AUS, TUS streams.
+    Exclude: bare MAIN (non-head, superseded), bare EUS (old), EXTENSION (OCP).
+    """
+    if is_head:
+        return True
+    if 'EXTENSION' in pv_name:
+        return False
+    for keep in ('MAIN+EUS', 'E4S', 'AUS', 'TUS'):
+        if keep in pv_name:
+            return True
+    # Plain .Z releases (e.g. RHEL-10.2.Z) with no further qualifier are standard z-streams
+    if pv_name.endswith('.Z'):
+        return True
+    return False
+
 def discover_rhel_releases(errata_map, ga_list, min_major=8):
     """
     Return all active RHEL releases from the errata map, grouped and sorted
@@ -351,9 +370,13 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
                 is_ga       = release in ga_list
                 use_zstream = False
             else:
-                # z-stream-only major: head release treated as GA for clone purposes
                 is_ga       = (i == 0)
                 use_zstream = True
+
+            is_head = (i == 0)
+            pv_name = (errata_map.get(release) or {}).get('name', '')
+            if not _relevant_release(pv_name, is_head):
+                continue
 
             result.append({
                 'release':     release,
