@@ -4,3 +4,5 @@ modified
 meta
 config.cfg
 errata_cache
+*.pyc
+__pycache__/
