@@ -311,12 +311,12 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
     per major version, newest first.
 
     Returns a list of dicts:
-      {'release': str, 'major': int, 'is_ga': bool, 'direct_create': bool}
+      {'release': str, 'major': int, 'is_ga': bool, 'latest_z_stream': bool}
 
     is_ga=True   — true GA release: create y-stream bug, request z-stream clones.
-    is_ga=False, direct_create=True  — latest release of a z-stream-only major
+    is_ga=False, latest_z_stream=True  — latest release of a z-stream-only major
                   (e.g. RHEL 8 which has no new GAs): create z-stream bug directly.
-    is_ga=False, direct_create=False — other z-streams: wait for cloned bug.
+    is_ga=False, latest_z_stream=False — other z-streams: wait for cloned bug.
 
     A major is considered "z-stream-only" when its latest errata product version
     name contains '.Z.' (e.g. 'RHEL-8.10.0.Z.MAIN+EUS') — meaning no true GA
@@ -347,17 +347,17 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
         for i, release in enumerate(sorted_releases):
             if has_true_ga:
                 is_ga        = release in ga_list
-                direct_create = False
+                latest_z_stream = False
             else:
                 # z-stream-only major: create bug directly for the latest release
                 is_ga         = False
-                direct_create = (i == 0)
+                latest_z_stream = (i == 0)
 
             result.append({
                 'release':       release,
                 'major':         major,
                 'is_ga':         is_ga,
-                'direct_create': direct_create,
+                'latest_z_stream': latest_z_stream,
             })
     return result
 

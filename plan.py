@@ -85,7 +85,7 @@ def cryptosvc_create_errata(component, fixversion, bugs):
 
 # ── release processing ────────────────────────────────────────────────────────
 
-def _handle_rhel(release, is_ga, direct_create=False):
+def _handle_rhel(release, is_ga, latest_z_stream=False):
     """Create/look up a RHEL Jira bug. Returns the bug key string."""
     if not Jira:
         return '0'
@@ -100,7 +100,7 @@ def _handle_rhel(release, is_ga, direct_create=False):
             if issue is not None and safe_int(release_get_major(release)) > 8:
                 print(f'  requesting z-stream clones for all active {release} z-streams')
                 issue_request_clone(Jira, issue, dry_run=DRY_RUN)
-    elif direct_create:
+    elif latest_z_stream:
         # z-stream-only major (e.g. RHEL 8): create z-stream bug directly
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
         if bugnumber == '0':
@@ -258,15 +258,15 @@ if mode == 'rhel':
     for item in discovered:
         release       = item['release']
         is_ga         = item['is_ga']
-        direct_create = item['direct_create']
+        latest_z_stream = item['latest_z_stream']
         if is_ga:
             label = 'GA'
-        elif direct_create:
+        elif latest_z_stream:
             label = 'z-stream (direct, no GA for this major)'
         else:
             label = 'z-stream'
         print(f'{release}: {label}')
-        bugnumber = _handle_rhel(release, is_ga, direct_create)
+        bugnumber = _handle_rhel(release, is_ga, latest_z_stream)
         print(f'  bug={bugnumber}')
         _maybe_create_crypto_epic(release, bugnumber)
         rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
