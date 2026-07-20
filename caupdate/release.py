@@ -276,6 +276,35 @@ def get_latest_zstreams(errata_map):
         l_zstream_list.append(last_zstream)
     return l_zstream_list
 
+def discover_fedora_releases():
+    """
+    Query the Bodhi API for current and pending Fedora releases.
+    Returns releases newest-first in build_combo.sh format:
+      ['rawhide', 'f45', 'f44', 'f43']
+    Rawhide is always prepended — it's never returned by Bodhi.
+    """
+    url = 'https://bodhi.fedoraproject.org/releases/'
+    releases = []
+    page = 1
+
+    while True:
+        r = requests.get(url, params=[('state', 'current'), ('state', 'pending'),
+                                      ('page', page)], timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        for rel in data['releases']:
+            name = rel['name']
+            if re.match(r'^F[0-9]+$', name):
+                releases.append(name.lower())          # F43 → f43
+        if page >= data.get('pages', 1):
+            break
+        page += 1
+
+    # sort descending (newest first), rawhide always last
+    fedora_nums = sorted([r for r in releases if r != 'rawhide'],
+                         key=lambda r: int(r[1:]), reverse=True)
+    return ['rawhide'] + fedora_nums
+
 def discover_rhel_releases(errata_map, ga_list, min_major=8):
     """
     Return all active RHEL releases from the errata map, grouped and sorted
@@ -297,8 +326,10 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
         by_major.setdefault(major, []).append(release)
 
     result = []
-    for major in sorted(by_major.keys()):
-        for release in sorted(by_major[major], key=lambda r: [safe_int(x) for x in r.split('-')[1].split('.')]):
+    for major in sorted(by_major.keys(), reverse=True):
+        for release in sorted(by_major[major],
+                              key=lambda r: [safe_int(x) for x in r.split('-')[1].split('.')],
+                              reverse=True):
             result.append({
                 'release': release,
                 'major': major,
