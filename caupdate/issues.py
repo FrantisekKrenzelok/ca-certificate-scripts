@@ -71,7 +71,24 @@ def make_jira_client(jira_url, jira_api_key):
     """Initialise and return a JiraSession."""
     import jira as jiralib
     url = jira_url.rstrip('/')
-    base_options    = {'server': url, 'verify': True}
+
+    # Resolve the actual server URL — issues.redhat.com redirects to
+    # redhat.atlassian.net and a raw requests.post() would follow that
+    # redirect as GET, breaking issue creation.
+    try:
+        r = requests.get(
+            f'{url}/rest/api/3/serverInfo',
+            headers={'Authorization': f'Bearer {jira_api_key}',
+                     'Accept': 'application/json'},
+            timeout=30)
+        actual_url = r.url.split('/rest/')[0].rstrip('/')
+        if actual_url != url:
+            print(f'Note: {url} → {actual_url}')
+            url = actual_url
+    except Exception as e:
+        print(f'Warning: could not resolve Jira URL ({e}), using {url} as-is')
+
+    base_options     = {'server': url, 'verify': True}
     constructor_args = {'options': base_options, 'token_auth': jira_api_key}
     if 'stage' in url:
         print('staging instance')
@@ -141,13 +158,13 @@ def issue_lookup(session, release, version, packages, year, zstream=False):
         release += '.z'
 
     jql = (f'project={JIRA_PROJ} AND issuetype={JIRA_ISSUE_TYPE} AND '
-           f'component={package} AND summary~"{summary}" AND fixVersion={release}')
+           f'component="{package}" AND summary~"{summary}" AND fixVersion="{release}"')
     print(jql)
 
     try:
         issues = session.search(jql, fields=['summary', 'key', 'status'])
     except requests.HTTPError as e:
-        print(f'Search failed: {e}')
+        print(f'Search failed: {e} — {e.response.text}')
         return '0', None
 
     if not issues:
