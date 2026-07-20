@@ -145,19 +145,21 @@ for parts in entries:
             print(f'{release}: no CRYPTO epic yet, skipping')
             continue
         print(f'{release}: setting assignee={qe} on QA sub-issues of {crypto_key}')
-        summaries = '", "'.join(QA_SUMMARIES)
-        jql = f'project=CRYPTO AND "Epic Link" = "{crypto_key}" AND summary in ("{summaries}")'
+        jql = f'project=CRYPTO AND "Epic Link" = "{crypto_key}"'
         try:
-            sub_issues = Jira.search(jql, fields=['key', 'summary'], max_results=10)
+            all_children = Jira.search(jql, fields=['key', 'summary'], max_results=20)
         except Exception as e:
             print(f'  WARNING: search failed: {e}')
             continue
-        if not sub_issues:
-            print(f'  WARNING: no QA sub-issues found')
+        if not all_children:
+            print(f'  WARNING: no children found for {crypto_key}')
             continue
-        for issue in sub_issues:
+        for issue in all_children:
             key     = issue['key']
-            summary = issue.get('fields', {}).get('summary', key)
+            summary = issue.get('fields', {}).get('summary', '')
+            if summary not in QA_SUMMARIES:
+                print(f'  skipping {key} ({summary})')
+                continue
             print(f'  {key} ({summary})', end=' ... ')
             if put_field(key, {'assignee': {'accountId': qe_account}}):
                 print('OK')
