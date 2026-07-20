@@ -32,7 +32,7 @@ from jwcrypto import jwk, jwe
 
 from caupdate.release import (
     release_get_major, safe_int,
-    get_need_zstream_clone,
+    get_need_zstream_clone, discover_rhel_releases,
     load_errata_map, CA_CERTS_FILE,
 )
 from caupdate.issues import (
@@ -92,14 +92,15 @@ def cryptosvc_create_errata(cryptosvc_url, access_token, pat, component, fixvers
 
 try:
     opts, release_args = getopt.getopt(
-        sys.argv[1:], 'f:v:o:m:', ['dry-run', 'resync'])
+        sys.argv[1:], 'f:v:o:m:', ['dry-run', 'resync', 'rhel-all'])
 except getopt.GetoptError as err:
     print(err)
     print('Usage: plan.py [-f firefox] [-v ckbi_version] [-o owner] [-m manager]'
-          ' [--dry-run] [--resync] releases...')
+          ' [--dry-run] [--resync] [--rhel-all] [fedora-releases...]')
     sys.exit(2)
 
 resync          = False
+rhel_all        = False
 firefox_version = None
 version         = None
 owner           = None
@@ -133,15 +134,17 @@ for config_line in open(config_file, 'r'):
         DRY_RUN = value.lower() == 'true'
 
 for opt, arg in opts:
-    if opt == '-f':          firefox_version = arg
-    elif opt == '-v':        version = arg
-    elif opt == '-o':        owner = arg
-    elif opt == '-m':        manager = arg
-    elif opt == '--dry-run': DRY_RUN = True
-    elif opt == '--resync':  resync = True
+    if opt == '-f':           firefox_version = arg
+    elif opt == '-v':         version = arg
+    elif opt == '-o':         owner = arg
+    elif opt == '-m':         manager = arg
+    elif opt == '--dry-run':  DRY_RUN = True
+    elif opt == '--resync':   resync = True
+    elif opt == '--rhel-all': rhel_all = True
 
-if not release_args:
-    print('No releases specified.')
+if not release_args and not rhel_all:
+    print('No releases specified. Use --rhel-all to discover RHEL releases automatically,')
+    print('or pass release names (e.g. rhel-9.6.0 f43 rawhide).')
     sys.exit(1)
 
 if firefox_version is None:
@@ -191,52 +194,81 @@ else:
 packages = 'ca-certificates'
 rhel_entries   = []
 fedora_entries = []
+ver     = version or 'unknown'
+nss_ver = config.get('nss_version', 'unknown')
+mcs_ver = config.get('mcs_version', 'unknown')
 
 print('\n=== Planning releases ===\n')
 
+def _handle_rhel(release, is_ga):
+    """Create/look up a bug for one RHEL release. Returns the bug key."""
+    bugnumber = '0'
+    if not Jira:
+        return bugnumber
+
+    if is_ga:
+        # GA release: create the y-stream bug, then request clones for all z-streams
+        bugnumber, _ = issue_lookup(Jira, release, ver, packages, year)
+        if bugnumber == '0':
+            bugnumber, _ = issue_create(
+                Jira, release, ver, nss_ver, firefox_version, mcs_ver,
+                packages, zstream=False, year=year)
+        if bugnumber not in ('0', 'DRY-0'):
+            major = safe_int(release_get_major(release))
+            if major > 8:
+                print(f'  requesting z-stream clones for all active {release} z-streams')
+                issue_request_clone(Jira, release, ver, packages, year)
+    else:
+        # Z-stream: look up the cloned bug (created asynchronously by Jira)
+        bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
+        if bugnumber == '0':
+            print(f'  clone not yet available — will retry on next run')
+
+    return bugnumber
+
+def _maybe_create_crypto_epic(release, bugnumber):
+    """Call cryptosvc to create the CRYPTO errata epic for this release."""
+    if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
+        return
+    if bugnumber in ('0', 'DRY-0'):
+        return
+    fixversion = release.replace('rhel-', '')
+    print(f'  creating CRYPTO errata epic for {packages}/{fixversion}')
+    cryptosvc_create_errata(
+        cryptosvc_url, cryptosvc_access_token, cryptosvc_pat,
+        packages, fixversion, [bugnumber])
+
+if rhel_all:
+    # Auto-discover all active RHEL releases from the errata map
+    discovered = discover_rhel_releases(errata_map, ga_list)
+    if not discovered:
+        print('WARNING: --rhel-all found no active RHEL releases in errata map')
+    for item in discovered:
+        release = item['release']
+        is_ga   = item['is_ga']
+        print(f'{release}: {"GA" if is_ga else "z-stream"}')
+        bugnumber = _handle_rhel(release, is_ga)
+        print(f'  bug={bugnumber}')
+        _maybe_create_crypto_epic(release, bugnumber)
+        rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
+
+# Explicit releases passed on the command line
 for release in release_args:
     if release.startswith('f') or release == 'rawhide':
         print(f'{release}: fedora (no bug needed)')
         fedora_entries.append((release, packages, '0', '0', '', 'planned'))
         continue
 
-    major   = safe_int(release_get_major(release))
-    zstream = get_need_zstream_clone(release, ga_list)
+    # Explicit RHEL release (only when not using --rhel-all)
+    if rhel_all:
+        print(f'WARNING: ignoring explicit RHEL release {release} (--rhel-all is active)')
+        continue
 
-    print(f'{release}: major={major} zstream={zstream}')
-
-    bugnumber = '0'
-    if Jira:
-        if zstream:
-            bugnumber, _ = issue_lookup(Jira, release, version or 'unknown',
-                                        packages, year, zstream=True)
-            if bugnumber == '0':
-                print(f'  no cloned z-stream bug yet — will wait')
-        else:
-            bugnumber, _ = issue_lookup(Jira, release, version or 'unknown',
-                                        packages, year)
-            if bugnumber == '0':
-                bugnumber, _ = issue_create(
-                    Jira, release, version or 'unknown',
-                    config.get('nss_version', 'unknown'),
-                    firefox_version,
-                    config.get('mcs_version', 'unknown'),
-                    packages, zstream=False, year=year)
-                if bugnumber not in ('0', 'DRY-0') and major > 8:
-                    issue_request_clone(Jira, release, version or 'unknown',
-                                        packages, year)
-
+    is_ga = release in ga_list
+    print(f'{release}: {"GA" if is_ga else "z-stream"}')
+    bugnumber = _handle_rhel(release, is_ga)
     print(f'  bug={bugnumber}')
-
-    # trigger CRYPTO errata epic creation via cryptosvc
-    if cryptosvc_url and cryptosvc_pat and cryptosvc_access_token \
-            and bugnumber not in ('0', 'DRY-0'):
-        fixversion = release.replace('rhel-', '')
-        print(f'  creating CRYPTO errata epic for {packages}/{fixversion}')
-        cryptosvc_create_errata(
-            cryptosvc_url, cryptosvc_access_token, cryptosvc_pat,
-            packages, fixversion, [bugnumber])
-
+    _maybe_create_crypto_epic(release, bugnumber)
     rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
 
 # ── write meta files ──────────────────────────────────────────────────────────

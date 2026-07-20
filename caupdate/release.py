@@ -276,6 +276,36 @@ def get_latest_zstreams(errata_map):
         l_zstream_list.append(last_zstream)
     return l_zstream_list
 
+def discover_rhel_releases(errata_map, ga_list, min_major=8):
+    """
+    Return all active RHEL releases from the errata map, grouped and sorted
+    per major version.
+
+    Returns a list of dicts:
+      {'release': str, 'major': int, 'is_ga': bool}
+
+    One entry per errata_map key that looks like rhel-X.Y[.Z] with major >= min_major.
+    The GA release for each major (as identified by ga_list) is flagged is_ga=True.
+    """
+    by_major = {}
+    for release in errata_map.keys():
+        if not release.startswith('rhel-'):
+            continue
+        major = safe_int(release_get_major(release))
+        if major < min_major:
+            continue
+        by_major.setdefault(major, []).append(release)
+
+    result = []
+    for major in sorted(by_major.keys()):
+        for release in sorted(by_major[major], key=lambda r: [safe_int(x) for x in r.split('-')[1].split('.')]):
+            result.append({
+                'release': release,
+                'major': major,
+                'is_ga': release in ga_list,
+            })
+    return result
+
 def load_errata_map(errata_url_base, cache_file, ca_certs_file=CA_CERTS_FILE, force_resync=False):
     """
     Load errata map from cache, refreshing if stale (>30 days) or forced.
