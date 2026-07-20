@@ -141,6 +141,24 @@ def _get_epic_from_rhel_bug(bugnumber):
         print(f'  WARNING: could not read epic link on {bugnumber}: {e}')
     return None
 
+def _set_crypto_parent(crypto_key):
+    """Set crypto_epic_parent as the parent of a CRYPTO epic."""
+    if not (Jira and crypto_epic_parent and crypto_key and crypto_key not in ('0', 'DRY-CRYPTO-0')):
+        return
+    if DRY_RUN:
+        print(f'  DRY_RUN: would set parent {crypto_epic_parent} on {crypto_key}')
+        return
+    payload = {'fields': {'parent': {'key': crypto_epic_parent}}}
+    try:
+        r = requests.put(f'{Jira.url}/rest/api/3/issue/{crypto_key}',
+                         json=payload, headers=Jira._headers(), timeout=30)
+        if r.status_code == 204:
+            print(f'  set parent {crypto_epic_parent} → {crypto_key}')
+        else:
+            print(f'  WARNING: could not set parent on {crypto_key}: {r.status_code} {r.text[:120]}')
+    except Exception as e:
+        print(f'  WARNING: set parent failed for {crypto_key}: {e}')
+
 def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
         return None
@@ -164,13 +182,15 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if key:
         print(f'  CRYPTO epic: {key}')
         crypto_map[release] = key
+        _set_crypto_parent(key)
     return key
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 
 try:
     opts, _ = getopt.getopt(
-        sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora'])
+        sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora',
+                                        'crypto-epic-parent='])
 except getopt.GetoptError as err:
     print(err)
     print('Usage: plan.py -f <firefox> [-n <nss_version>] [-s <mcs_version>] [--rhel | --fedora] [--dry-run] [--resync]')
@@ -189,6 +209,7 @@ jira_user              = None
 cryptosvc_url          = None
 cryptosvc_access_token = None
 cryptosvc_pat          = None
+crypto_epic_parent     = None
 config = {}
 
 for config_line in open(config_file, 'r'):
@@ -209,6 +230,7 @@ for config_line in open(config_file, 'r'):
     if key == 'cryptosvc_url':            cryptosvc_url = value
     if key == 'cryptosvc_access_token':   cryptosvc_access_token = value
     if key == 'cryptosvc_pat':            cryptosvc_pat = value
+    if key == 'crypto_epic_parent':       crypto_epic_parent = value
     if key == 'dry_run':
         DRY_RUN = value.lower() == 'true'
 
@@ -220,7 +242,8 @@ for opt, arg in opts:
     elif opt == '-o':        owner = arg
     elif opt == '-m':        manager = arg
     elif opt == '--dry-run': DRY_RUN = True
-    elif opt == '--resync':  resync = True
+    elif opt == '--resync':              resync = True
+    elif opt == '--crypto-epic-parent':  crypto_epic_parent = arg
     elif opt == '--rhel':    mode = 'rhel'
     elif opt == '--fedora':  mode = 'fedora'
 
