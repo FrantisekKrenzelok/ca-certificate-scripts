@@ -111,14 +111,13 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
                 packages, zstream=False, year=year)
         # Request clones if the GA bug has none yet (covers first creation
         # and the case where a previous clone request failed)
-        if bugnumber not in ('0', 'DRY-0') and major > 8:
+        if bugnumber not in ('0', 'DRY-0'):
             if not has_clone_links(Jira, bugnumber):
                 print(f'  no clone links found — requesting z-stream clones for {release}')
                 issue_request_clone(Jira, issue or bugnumber, dry_run=DRY_RUN)
             else:
                 print(f'  clones already exist for {bugnumber}')
     elif latest_z_stream:
-        # z-stream-only major (e.g. RHEL 8): create z-stream bug directly
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
         if bugnumber == '0':
             bugnumber, _ = issue_create(
@@ -154,6 +153,7 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if release in crypto_map:
         print(f'  CRYPTO epic already exists: {crypto_map[release]}')
         return crypto_map[release]
+    fixversion = jira_fixversion(release) + ('.z' if is_zstream else '')
     # Check the RHEL bug's epic link before calling cryptosvc
     existing = _get_epic_from_rhel_bug(bugnumber)
     if existing:
