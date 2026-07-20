@@ -202,19 +202,22 @@ def issue_lookup(session, release, version, packages, year, zstream=False):
     return issues[0]['key'], issues[0]
 
 def issue_request_clone(session, issue_or_key, dry_run=False):
-    """Request a z-stream bug clone on a GA issue (raw dict or key string)."""
+    """Request 'Clone for all active z-streams' on a GA issue."""
     key = issue_or_key if isinstance(issue_or_key, str) else issue_or_key['key']
     if dry_run:
         print(f'  DRY_RUN: would request z-stream clone for {key}')
         return True
+    payload = {'fields': {'customfield_10941': {'value': 'All Active Z-streams'}}}
     try:
-        jira_issue = session.client.issue(key)
-        jira_issue.update({'customfield_12323242': {'id': '33996'}})
-    except JIRAError as e:
-        # Field may not be on the screen in all Jira configurations
-        print(f'  WARNING: clone request on {key} failed (field not available?): {e.text}')
+        r = requests.put(f'{session.url}/rest/api/3/issue/{key}',
+                         json=payload, headers=session._headers(), timeout=30)
+        if r.status_code == 204:
+            return True
+        print(f'  WARNING: clone request on {key} returned {r.status_code}: {r.text}')
         return False
-    return True
+    except requests.RequestException as e:
+        print(f'  WARNING: clone request on {key} failed: {e}')
+        return False
 
 def issue_get_state(issue_or_dict):
     """Return the current status string of a Jira issue (python-jira obj or raw dict)."""
