@@ -29,14 +29,25 @@ import requests
 import json
 import git
 import datetime
-import jira
 import gitlab
 import re
-from functools import cmp_to_key
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
-
+from caupdate.release import (
+    release_get_major, safe_int,
+    get_need_zstream_clone, is_latest_z_stream,
+    release_requires_build, release_is_centos_stream,
+    errata_get_release_info,
+    load_errata_map, CA_CERTS_FILE,
+)
+from caupdate.issues import (
+    issue_create, issue_lookup, issue_request_clone,
+    issue_get_state, issue_change_state, issue_get,
+    make_jira_client,
+    JIRA_PROJ, JIRA_ISSUE_TYPE,
+    bug_summary_short, bug_summary, bug_description,
+)
 
 DRY_RUN = False # Used alongside staging environments for development
 
@@ -54,15 +65,8 @@ brew_url_base='https://brewweb.engineering.redhat.com/brew'
 koji_url_base='https://koji.fedoraproject.org/koji'
 jira_url_base='https://issues.redhat.com'
 glab_url_base='https://gitlab.com/'
-ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
-bug_summary_short='Annual %s ca-certificates update'
-bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s and Microsoft %s [%s]'
-bug_description='Update CA certificates to version %s from NSS %s and Microsoft %s for our annual CA certificate update.'
+ca_certs_file=CA_CERTS_FILE
 distro=None
-
-# Jira
-JIRA_PROJ = 'RHEL'
-JIRA_ISSUE_TYPE = 'Bug'
 
 
 
@@ -89,6 +93,7 @@ ga_list = []
 latest_zstreams = []
 errata_map = {}
 config = {}
+Jira = None
 
 # handle package location differences for rhel9 centos stream
 def get_git_packages_dir(distro,package,release) :
@@ -103,46 +108,21 @@ def get_build_packages_dir(distro,package,release) :
     if major > 9:
         return packages_dir[distro]+"%s/rhel%s-main"%(package,major)
     return packages_dir[distro]+"%s/%s"%(package,release)
-#
-# mapping functions to map release
-# to bugzilla strings
-#
-def get_need_zstream_clone(release) :
-    if safe_int(release_get_major(release)) < 8 :
-       return False
-    release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
-    return not release in ga_list
+# Release helpers and errata-map functions are in caupdate.release.
+# Wrappers below adapt the module-level ga_list/latest_zstreams globals
+# to the explicit-parameter signatures used in caupdate.
 
+def _get_need_zstream_clone(release):
+    return get_need_zstream_clone(release, ga_list)
 
-def is_latest_z_stream(release) :
-    release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
-    return release in latest_zstreams
+def _is_latest_z_stream(release):
+    return is_latest_z_stream(release, latest_zstreams)
 
-def release_get_major(release):
-    comp=release.split('-')
-    if len(comp) != 2:
-        return None
-    version=comp[1].split('.')
-    if len(version) < 2 :
-        return None
-    return version[0]
+def _release_requires_build(release):
+    return release_requires_build(release, latest_zstreams)
 
-def safe_int(a) :
-    try:
-       b =  int(a)
-    except ValueError :
-       b = 0;
-    return b
-
-def release_requires_build(release):
-    if safe_int(release_get_major(release)) < 9 :
-       return True
-    return is_latest_z_stream(release)
-
-def release_is_centos_stream(release) :
-    if safe_int(release_get_major(release)) < 8 :
-       return False
-    return not get_need_zstream_clone(release)
+def _release_is_centos_stream(release):
+    return release_is_centos_stream(release, ga_list)
 
 
 #
@@ -191,155 +171,25 @@ synopsis="%s bug fix and enhancement update"
 topic_base="An update for %s %s now available for %s."
 checkin_log="checkin.log"
 
-def splitnumeric(string) :
-    numeric=''
-    pos=len(string)
-    for i in range(0,pos-1) :
-        if not string[i].isnumeric() :
-            pos=i
-            break;
-        numeric = numeric + string[i]
-    return (numeric, string[pos:])
+# Wrappers for issue functions to inject the year global.
+def _issue_create(release, version, nss_version, firefox_version, mcs_version, packages, zstream):
+    return issue_create(Jira, release, version, nss_version, firefox_version,
+                        mcs_version, packages, zstream, year)
 
-def get_ga_list() :
-    l_ga_list = []
-    last_ga = None
-    last_major = 0
-    # errata_map is stored in release order already
-    for release in errata_map.keys() :
-        current_major = release_get_major(release)
-        if last_major != current_major :
-            if last_ga != None :
-                l_ga_list.append(last_ga)
-            last_major = current_major
-        last_ga=release
-    if (last_ga != None) :
-        l_ga_list.append(last_ga)
-    return l_ga_list
+def _issue_lookup(release, version, packages, zstream=False):
+    return issue_lookup(Jira, release, version, packages, year, zstream)
 
-def get_latest_zstreams() :
-    l_zstream_list = []
-    last_major = 0
-    last_zstream = None
-    for release in errata_map.keys():
-        name = release_map(release)
-        print(name)
-        if not '.Z' in name:
-            continue
-        current_major = release_get_major(release)
-        if last_major != current_major :
-            if last_zstream != None:
-                l_zstream_list.append(last_zstream)
-            last_major = current_major
-        last_zstream = release
-    if last_zstream != None:
-        l_zstream_list.append(last_zstream)
-    return l_zstream_list
+def _issue_request_clone(release, version, packages):
+    return issue_request_clone(Jira, release, version, packages, year)
 
-#
-#    Jira helper function
-#
-# For future development, the issue has to be loaded again after a update
-# see. issue_change_state
+def _issue_get(bugnumber):
+    return issue_get(Jira, bugnumber)
 
-# create a new issue and return the issue number and issue reference
-def issue_create(jira, release, version, nss_version, firefox_version, mcs_version, packages, zstream):
-    package = packages.split(',')[0]
-
-    if release == "rhel-8.10.0": # consistency............
-        release = "rhel-8.10"
-
-    if zstream :
-        release += ".z"
-
-    issue_metadata = {
-        'project': {'key': JIRA_PROJ},
-        'issuetype': {'name': JIRA_ISSUE_TYPE},
-        'summary': bug_summary%(year,version,nss_version,firefox_version,mcs_version,release),
-        'description': bug_description%(version,nss_version, mcs_version),
-        'fixVersions' : [{'name': release}],
-        'components': [{'name': package}],
-        'priority': {'name': 'Minor'},
-        'security': {'name': 'Red Hat Employee'},
-        'labels': ["Triaged", "Rebase"],
-    }
-
-    try:
-        new_issue = jira.create_issue(fields=issue_metadata)
-    except JIRAError as e:
-        print(f'Issue couldn\'t be created: {e}');
-        return 0, None
-    return new_issue.key, new_issue;
-
-# lookup an issue and return the issue number and issue reference
-def issue_lookup(jira, release, version, packages, zstream=False):
-    issues = None
-    package = packages.split(',')[0]
-    summary=bug_summary_short%year
-
-    if zstream :
-        release += ".z"
-
-    jql_query = (f'project={JIRA_PROJ} AND '
-                 f'issuetype={JIRA_ISSUE_TYPE} AND '
-                 f'component={package} AND '
-                 f'summary~"{summary}" AND '
-                 f'fixVersion={release}')
-
-    print(jql_query)
-    try:
-        issues = jira.search_issues(jql_query)
-    except JIRAError as e:
-        print(e)
-
-    if issues == None:
-        print(f'Found 0 issues matching {summary}')
-        return "0", None
-    elif len(issues) != 1:
-        print(f'Found {len(issues)} issues matching {summary}')
-        return "0", None
-
-    return issues[0].key, issues[0];
-
-def issue_request_clone(jira, release, version, packages):
-    package = packages.split(',')[0]
-    summary=bug_summary_short%year
-
-    _, issue = issue_lookup(jira, release, version, packages)
-    if issue == None:
-        return False
-
-    try:
-        # Request Clone for all active z-streams
-        issue.update({'customfield_12323242' : {'id' : "33996" }})
-    except JIRAError as e:
-        print(e)
-
-    return True
-
-# return the issue state
-def issue_get_state(issue):
-    return str(issue.fields.status)
-
-# change the issue state
-def issue_change_state(jira, issue, state):
-    try:
-        jira.transition_issue(issue, state)
-    except JIRAError as e:
-        print(f'Couldn\'t transition to {state}: {e}');
-
-    # Refresh issue details
-    issue = jira.issue(issue.key)
-
+def _issue_get_state(issue):
     return issue_get_state(issue)
 
-def issue_get(jira,bugnumber):
-    try:
-        issue = jira.issue(bugnumber)
-    except JIRAError as e:
-        print(e);
-        return None;
-    return issue
+def _issue_change_state(issue, state):
+    return issue_change_state(Jira, issue, state)
 
 #
 #    Errata helper function
@@ -394,31 +244,9 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     print('returned text=',r.text)
     return 0
 
-def errata_get_all_pages(url,paste,request_type) :
-    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    r = requests.get(url, headers=headers,
-                     auth=HTTPKerberosAuth(),
-                     verify=ca_certs_file)
-    if r.status_code > 299 :
-        print('errata %s status=%d'%(request_type,r.status_code))
-        print('text=',r.text)
-        return None
-    data = r.json()['data']
-    if 'page' in r.json() :
-        page=r.json()['page']
-        num_pages=page['total_pages']
-        if num_pages != 1 :
-            for i in range(2,num_pages+1) :
-                url_page="%s%spage[number]=%d"%(url,paste,i)
-                r = requests.get(url_page, headers=headers,
-                                 auth=HTTPKerberosAuth(),
-                                 verify=ca_certs_file)
-                if r.status_code > 299 :
-                    print('errata %s page %d status=%d'%(request_type, i, r.status_code))
-                    print('text=',r.text)
-                    return None
-                data=data+r.json()['data']
-    return data
+def errata_get_all_pages(url, paste, request_type):
+    from caupdate.release import _errata_get_all_pages
+    return _errata_get_all_pages(url, paste, request_type, ca_certs_file)
 
 def errata_lookup(release, version, firefox_version, packages) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -570,196 +398,9 @@ def errata_add_builds(errata, release, builds) :
     print('text=',r.text)
     return
 
-def errata_candidate_to_release(brew_tag) :
-    lists = brew_tag.split('-')
-    if len(lists) < 1:
-        return 'empty'
-    rhel_type=lists[0].lower()
-    if len(lists) < 2:
-        return rhel_type
-    return "%s-%s"%(rhel_type,lists[1])
-
-def errata_nvrcmp(rel1,rel2) :
-    comp1 = rel1.split('-')
-    comp2 = rel2.split('-')
-    # handle the empty string cases
-    if len(comp1) == 0 :
-        if (len(comp2) == 0) :
-            return 0
-        return -1
-    if len(comp2) == 0 :
-        return 1
-    # handle the product differences
-    if (comp1[0] < comp2[0]) :
-       return -1
-    if (comp1[0] > comp2[0]) :
-       return 1
-    if len(comp1) == 1 :
-        if len(comp2) == 1 :
-            return 0
-        return -1
-    if len(comp2) == 1 :
-        return 1
-    # treat the version as numeric values
-    ver1 = comp1[1].split('.')
-    ver2 = comp2[1].split('.')
-    for i in range(0,min(len(ver1),len(ver2))) :
-        if ver1[i] == ver2[i] :
-            continue
-        if not ver1[i].isnumeric() or not ver2[i].isnumeric():
-            (v1n, v1rest) = splitnumeric(ver1[i])
-            (v2n, v2rest) = splitnumeric(ver2[i])
-            if (v1n < v2n) :
-                return -1
-            if (v1n > v2n) :
-                return 1
-            if (v1rest < v2rest) :
-                return -1
-            return 1
-        if (int(ver1[i]) < int(ver2[i])) :
-           return -1
-        return 1
-    if len(ver1) < len(ver2) :
-        return -1
-    if len(ver1) > len(ver2) :
-        return 1
-    # now parse the rest
-    if len(comp1) == 2 :
-        if len(comp2) == 2 :
-            return 0
-        return -1
-    if len(comp2) == 2 :
-        return 1
-    for i in range(0,min(len(comp1),len(comp2))) :
-        if comp1[i] < comp2[i] :
-           return -1
-        if comp1[i] > comp2[i] :
-           return 1
-    if len(comp1) < len(comp2) :
-        return -1
-    if len(comp1) > len(comp2) :
-        return 1
-
-def errata_get_version_order(version) :
-    if version.endswith(".EUS") :
-        return 10
-    if version.endswith("-EUS") :
-        return 9
-    if version.endswith(".Z") :
-        return 8
-    if version.endswith(".AUS") :
-        return 7
-    if version.endswith("-AUS") :
-        return 6
-    if version.endswith(".TUS") :
-        return 5
-    if version.endswith("-TUS") :
-        return 4
-    if version.endswith(".E4S") :
-        return 3
-    if version.endswith("-E4S") :
-        return 2
-    return 0
-
-def errata_is_better(best, compare, isga) :
-    if best == None :
-        return True
-    bestname=best['name']
-    if bestname.endswith(".GA") :
-        return  not isga
-    comparename=compare['name']
-    if comparename.endswith(".GA") :
-        return isga
-    if bestname.endswith(".MAIN+EUS") :
-        return False
-    if comparename.endswith(".MAIN+EUS") :
-        return True
-    return errata_get_version_order(bestname) < errata_get_version_order(comparename)
-
-def errata_get_best_version(version_list, isga) :
-    best=None
-    for version in version_list :
-        if errata_is_better(best,version,isga) :
-            best = version
-    return best
-
-def errata_get_release_id():
-    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    params="/api/v1/releases"
-    url=errata_url_base + params
-
-    errata_ids = {}
-    data = errata_get_all_pages(url,'?',"")
-    if data == None :
-        return None
-
-    for item in data:
-        _id = item.get('id')
-        _name = item.get("attributes").get("name")
-        errata_ids[_name] = _id
-
-    return errata_ids
-
-
-def errata_get_release_info() :
-
-    # fetch release id's for products.
-    # Not to be confused with product id's
-    errata_release_ids = errata_get_release_id()
-
-    # get releases
-    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    params="/api/v1/products/16/product_versions"
-    url=errata_url_base + params
-    data = errata_get_all_pages(url,"?","release_info")
-    if data == None :
-        return 0
-    product_version_list = dict()
-    out_of_life_list = dict()
-    maps = dict()
-    releases = list()
-    for product_version in data:
-        product_version_info = dict()
-        attributes = product_version['attributes']
-        name = attributes['name']
-        product_version_info['name'] = name
-        product_version_info['description'] = attributes['description']
-        product_version_info['id'] = product_version['id']
-        if name not in errata_release_ids:
-            print("%s not in errata_release_ids"%name)
-            continue
-        product_version_info['release_id'] = errata_release_ids[name]
-        brew = attributes['default_brew_tag']
-        if brew == None:
-            print("brew tag is None for %s"%name)
-            continue
-        release = errata_candidate_to_release(brew)
-        if not release in releases :
-                print("adding release= %s"%release)
-                releases.append(release)
-        if attributes['enabled'] :
-            if not release in product_version_list :
-                product_version_list[release] = []
-            product_version_list[release].append(product_version_info)
-        else :
-            if not release in out_of_life_list :
-                out_of_life_list[release] = []
-            out_of_life_list[release].append(product_version_info)
-    ga=None
-    print("releases =",releases)
-    sorted_releases = sorted(releases,key=cmp_to_key(errata_nvrcmp))
-    print("sorted_releases =",sorted_releases)
-    for release in sorted_releases :
-        if release in product_version_list :
-            for pv in product_version_list[release] :
-                if pv['name'].endswith('.GA') :
-                    ga=release
-    for release in sorted_releases :
-        if release in product_version_list :
-            maps[release] = errata_get_best_version(
-                        product_version_list[release], release == ga)
-            print('release=',release,'map=',maps[release])
-    return maps
+def errata_get_release_info():
+    from caupdate.release import errata_get_release_info as _eri
+    return _eri(errata_url_base, ca_certs_file)
 
 def errata_merge_rpm_status(status, status2) :
     # first, state of PASSED has lowest priority
@@ -1231,30 +872,7 @@ for opt, arg in opts:
         sys.exit(0)
 
 if jira_api_key is not None:
-    base_options = {
-        'server': jira_url_base,
-        'verify': True
-    }
-
-    constructor_args = {
-        'options'   : base_options,
-        'token_auth': jira_api_key,
-    }
-
-    if 'stage' in jira_url_base:
-        print("staging instance")
-        # staging instance requires proxies
-        constructor_args['proxies'] = {
-            'http' : 'http://squid.corp.redhat.com:3128',
-            'https': 'http://squid.corp.redhat.com:3128'
-        }
-
-    try:
-        Jira = jira.JIRA(**constructor_args)
-    except JIRAError as e:
-        print(f"JIRA Error connecting to {jira_url_base}: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred while trying to connect to JIRA at {jira_url_base}: {e}")
+    Jira = make_jira_client(jira_url_base, jira_api_key)
 
 if glab_api_key != None:
     try:
@@ -1266,39 +884,8 @@ if glab_api_key != None:
 if GLab != None and centos_fork != None:
     CentOSFork = GLab.projects.get(centos_fork.replace(glab_url_base, ""))
 
-#
-# initialize our map of release names (rhel-8.10, rhel-9.6.0, etc.) to
-# various values and descriptions used by the errata system. We query
-# the errata system to find those mapping, then we cache them in
-# the errata_cache_file. From then on we just use the cache unless
-# the cache time is too old, or the user has requested a resync
-#
-if not resync :
-    try:
-        f = open(errata_cache_file, "r")
-        valid = datetime.datetime.strptime(f.readline().strip(),"%Y-%m-%d")
-        print(valid)
-        delta = datetime.date.today()-valid.date()
-        if delta > datetime.timedelta(days=30) :
-            resync=True
-        else :
-            errata_map = json.loads(f.read())
-        f.close()
-    except Exception:
-        resync=True
-
-if resync :
-    errata_map = errata_get_release_info()
-    f=open(errata_cache_file, "w")
-    f.write(datetime.date.today().strftime("%Y-%m-%d")+"\n")
-    f.write(json.dumps(errata_map,indent=1))
-    f.close()
-
-
-
-# we have the errata_map now , we can get the ga_list
-ga_list = get_ga_list()
-latest_zstreams = get_latest_zstreams()
+errata_map, ga_list, latest_zstreams = load_errata_map(
+    errata_url_base, errata_cache_file, ca_certs_file, force_resync=resync)
 
 if get_ga :
     for i in ga_list :
@@ -1355,7 +942,7 @@ for fedora_entry in open(fedora_list, 'r'):
 #######################################################
 distro='rhel'
 for release in rhel_packages:
-    if release_is_centos_stream(release) :
+    if _release_is_centos_stream(release) :
         distro='centos'
     else :
         distro='rhel'
@@ -1374,9 +961,9 @@ for release in rhel_packages:
     print("  * handling bugs")
     if bugnumber == "0" :
         # we need bug numbers so that we can commit our changes
-        if get_need_zstream_clone(release) :
+        if _get_need_zstream_clone(release) :
             # lookup cloned bug number
-            bugnumber,issue=issue_lookup(Jira,release,version,packages,zstream=True)
+            bugnumber,issue=_issue_lookup(release,version,packages,zstream=True)
             if bugnumber == "0" :
                 print("    * waiting for clone")
                 entry['state']='waiting bug clone'
@@ -1384,11 +971,11 @@ for release in rhel_packages:
             entry['bugnumber']=bugnumber
         else :
             # first lookup the bug to see if it has already been created
-            bugnumber,issue=issue_lookup(Jira,release,version,packages)
+            bugnumber,issue=_issue_lookup(release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
-                zstream = is_latest_z_stream(release) # relevant for 8^
-                bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,mcs_version,packages, zstream)
+                zstream = _is_latest_z_stream(release) # relevant for 8^
+                bugnumber,issue=_issue_create(release,version,nss_version,firefox_version,mcs_version,packages, zstream)
 
                 if bugnumber == "0":
                     entry['state']='need bug'
@@ -1396,12 +983,12 @@ for release in rhel_packages:
 
                 # Request clone right away
                 if safe_int(release_get_major(release)) > 8:
-                    issue_request_clone(Jira, release, version, packages)
+                    _issue_request_clone(release, version, packages)
 
             entry['bugnumber']=bugnumber
     print("      * bug=%s"%bugnumber)
     if issue == None :
-        issue = issue_get(Jira,bugnumber)
+        issue = _issue_get(bugnumber)
     # if we are here, we have our bug created for our release, we can check it in
     all_builds_pushed=True
     print("  * checking git tree status")
@@ -1445,11 +1032,11 @@ for release in rhel_packages:
 
               # [one build per major release]
               # build only if release is that latest z stream or rhel-8 and older
-              if release_requires_build(release):
+              if _release_requires_build(release):
                   nvr = build(release,package)
                   entry['nvr'] = add_nvr(entry['nvr'],nvr)
 
-    if not release_requires_build(release):
+    if not _release_requires_build(release):
         # [one build per major release]
         # skip (ASYNC) errata creation if not the latest z stream (only rhel-9^)
         continue
@@ -1484,15 +1071,15 @@ for release in rhel_packages:
     else :
         entry['state'] = 'builds complete'
     print('  * handling errata')
-    bug_state=issue_get_state(issue)
+    bug_state=_issue_get_state(issue)
     print("Bug state: "+bug_state)
     # once the builds are complete, put the bug in modified state
     bug_resync = False
     if bug_state == 'NEW' :
-        bug_state = issue_change_state(Jira, issue, 'PLANNING')
+        bug_state = _issue_change_state(issue, 'PLANNING')
     if all_builds_pushed and (bug_state == 'NEW' or bug_state == 'PLANNING') :
         bug_resync = True
-        bug_state = issue_change_state(Jira, issue, 'IN PROGRESS')
+        bug_state = _issue_change_state(issue, 'IN PROGRESS')
     # and once our bug is modified, we can create the errata
     if erratanumber == 0 :
         erratanumber = errata_lookup(release, version, firefox_version, packages)
