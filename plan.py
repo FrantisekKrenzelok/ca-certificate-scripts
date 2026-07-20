@@ -39,7 +39,7 @@ from caupdate.release import (
 )
 from caupdate.issues import (
     issue_create, issue_lookup, issue_request_clone,
-    make_jira_client,
+    make_jira_client, jira_fixversion,
 )
 from caupdate.versions import fetch_nss_versions, NSS_BASE_URL
 
@@ -61,7 +61,7 @@ ca_certs_file     = CA_CERTS_FILE
 # ── cryptosvc helpers ─────────────────────────────────────────────────────────
 
 
-def cryptosvc_create_errata(component, fixversion, bugs):
+def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     """Call the existing cryptosvc /jira/errata/create endpoint."""
     url = cryptosvc_url.rstrip('/') + '/jira/errata/create'
     headers = {
@@ -69,7 +69,13 @@ def cryptosvc_create_errata(component, fixversion, bugs):
         'PAT': cryptosvc_pat,
         'Content-Type': 'application/json',
     }
-    body = {'component': component, 'fixversion': fixversion, 'bugs': bugs}
+    body = {
+        'component':   component,
+        'fixversion':  fixversion,
+        'bugs':        bugs,
+        'description': description,
+        'override':    False,
+    }
     if DRY_RUN:
         print(f'  DRY_RUN: POST {url} {body}')
         return True
@@ -115,14 +121,17 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
 
     return bugnumber
 
-def _maybe_create_crypto_epic(release, bugnumber):
+def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
     if not (cryptosvc_url and cryptosvc_pat and cryptosvc_access_token):
         return
     if bugnumber in ('0', 'DRY-0'):
         return
-    fixversion = release.replace('rhel-', '')
+    fixversion = jira_fixversion(release) + ('.z' if is_zstream else '')
+    description = (bug_summary_short % year) + (
+        f' version {ver} from NSS {nss_ver} for Firefox {firefox_version}'
+        f' and Microsoft {mcs_ver}')
     print(f'  creating CRYPTO errata epic for {packages}/{fixversion}')
-    cryptosvc_create_errata(packages, fixversion, [bugnumber])
+    cryptosvc_create_errata(packages, fixversion, [bugnumber], description)
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 
@@ -268,7 +277,7 @@ if mode == 'rhel':
         print(f'{release}: {label}')
         bugnumber = _handle_rhel(release, is_ga, latest_z_stream)
         print(f'  bug={bugnumber}')
-        _maybe_create_crypto_epic(release, bugnumber)
+        _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga)
         rhel_entries.append((release, packages, bugnumber, '0', '', 'planned', '', ''))
 
 elif mode == 'fedora':

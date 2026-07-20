@@ -136,7 +136,7 @@ def _adf(text):
 
 # ── issue CRUD ────────────────────────────────────────────────────────────────
 
-def _jira_fixversion(release):
+def jira_fixversion(release):
     """
     Convert errata-map release name to Jira fixVersion name.
     The errata map uses rhel-X.Y.0 but Jira uses rhel-X.Y (no trailing .0).
@@ -148,7 +148,7 @@ def issue_create(session, release, version, nss_version, firefox_version,
                  mcs_version, packages, zstream, year):
     """Create a new RHEL Jira bug. Returns (key, raw_dict) or ('0', None)."""
     package = packages.split(',')[0]
-    release = _jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
+    release = jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
 
     if zstream:
         release += '.z'
@@ -177,7 +177,7 @@ def issue_lookup(session, release, version, packages, year, zstream=False):
     """Look up an existing RHEL Jira bug. Returns (key, raw_dict) or ('0', None)."""
     package = packages.split(',')[0]
     summary = bug_summary_short % year
-    release = _jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
+    release = jira_fixversion(release)  # rhel-X.Y.0 → rhel-X.Y
 
     if zstream:
         release += '.z'
