@@ -96,35 +96,31 @@ def cryptosvc_create_errata(component, fixversion, bugs, description=''):
 
 # ── release processing ────────────────────────────────────────────────────────
 
-def _handle_rhel(release, is_ga, latest_z_stream=False):
-    """Create/look up a RHEL Jira bug. Returns the bug key string."""
+def _handle_rhel(release, is_ga, use_zstream=False):
+    """Create/look up a RHEL Jira bug. Returns the bug key string.
+
+    is_ga=True  — head release (true GA or head of z-stream-only major):
+                  create bug, then request 'All Active Z-streams' clones.
+    is_ga=False — other z-streams: look up the cloned bug, wait if not yet available.
+    use_zstream — when True, the bug fixVersion uses the .z suffix (e.g. rhel-9.9.z).
+    """
     if not Jira:
         return '0'
 
     if is_ga:
-        # True GA: create y-stream bug, then request z-stream clones
-        major = safe_int(release_get_major(release))
-        bugnumber, issue = issue_lookup(Jira, release, ver, packages, year)
+        bugnumber, issue = issue_lookup(Jira, release, ver, packages, year,
+                                        zstream=use_zstream)
         if bugnumber == '0':
             bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
-                packages, zstream=False, year=year)
-        # Request clones if the GA bug has none yet (covers first creation
-        # and the case where a previous clone request failed)
+                packages, zstream=use_zstream, year=year)
         if bugnumber not in ('0', 'DRY-0'):
             if not has_clone_links(Jira, bugnumber):
-                print(f'  no clone links found — requesting z-stream clones for {release}')
+                print(f'  no clone links — requesting z-stream clones for {release}')
                 issue_request_clone(Jira, issue or bugnumber, dry_run=DRY_RUN)
             else:
                 print(f'  clones already exist for {bugnumber}')
-    elif latest_z_stream:
-        bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
-        if bugnumber == '0':
-            bugnumber, _ = issue_create(
-                Jira, release, ver, nss_ver, firefox_version, mcs_ver,
-                packages, zstream=True, year=year)
     else:
-        # Other z-streams: wait for clone from GA bug
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
         if bugnumber == '0':
             print(f'  clone not yet available — will retry on next run')
@@ -312,17 +308,17 @@ if mode == 'rhel':
     if not discovered:
         print('WARNING: no active RHEL releases found in errata map')
     for item in discovered:
-        release       = item['release']
-        is_ga         = item['is_ga']
-        latest_z_stream = item['latest_z_stream']
-        if is_ga:
+        release      = item['release']
+        is_ga        = item['is_ga']
+        use_zstream  = item['use_zstream']
+        if is_ga and not use_zstream:
             label = 'GA'
-        elif latest_z_stream:
-            label = 'z-stream (direct, no GA for this major)'
+        elif is_ga and use_zstream:
+            label = 'GA (z-stream-only major)'
         else:
             label = 'z-stream'
         print(f'{release}: {label}')
-        bugnumber = _handle_rhel(release, is_ga, latest_z_stream)
+        bugnumber = _handle_rhel(release, is_ga, use_zstream)
         print(f'  bug={bugnumber}')
         crypto_key = _maybe_create_crypto_epic(release, bugnumber, is_zstream=not is_ga) or ''
 

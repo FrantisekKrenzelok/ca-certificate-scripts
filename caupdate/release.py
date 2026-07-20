@@ -311,16 +311,18 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
     per major version, newest first.
 
     Returns a list of dicts:
-      {'release': str, 'major': int, 'is_ga': bool, 'latest_z_stream': bool}
+      {'release': str, 'major': int, 'is_ga': bool, 'use_zstream': bool}
 
-    is_ga=True   — true GA release: create y-stream bug, request z-stream clones.
-    is_ga=False, latest_z_stream=True  — latest release of a z-stream-only major
-                  (e.g. RHEL 8 which has no new GAs): create z-stream bug directly.
-    is_ga=False, latest_z_stream=False — other z-streams: wait for cloned bug.
+    is_ga=True, use_zstream=False — true GA (e.g. rhel-10.3): create y-stream bug,
+                                    request 'All Active Z-streams' clones.
+    is_ga=True, use_zstream=True  — head of z-stream-only major (e.g. rhel-8.10.0,
+                                    rhel-9.9.0): create z-stream bug directly, then
+                                    also request 'All Active Z-streams' clones.
+    is_ga=False                   — other z-streams: wait for the cloned bug.
 
-    A major is considered "z-stream-only" when its latest errata product version
-    name contains '.Z.' (e.g. 'RHEL-8.10.0.Z.MAIN+EUS') — meaning no true GA
-    release is being shipped for that major any more.
+    A major is "z-stream-only" when none of its errata product versions end with
+    '.GA' (e.g. 'RHEL-8.10.0.Z.MAIN+EUS'). The latest release of such a major
+    is treated as the head and gets is_ga=True so the clone logic runs.
     """
     by_major = {}
     for release in errata_map.keys():
@@ -346,18 +348,18 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
 
         for i, release in enumerate(sorted_releases):
             if has_true_ga:
-                is_ga        = release in ga_list
-                latest_z_stream = False
+                is_ga       = release in ga_list
+                use_zstream = False
             else:
-                # z-stream-only major: create bug directly for the latest release
-                is_ga         = False
-                latest_z_stream = (i == 0)
+                # z-stream-only major: head release treated as GA for clone purposes
+                is_ga       = (i == 0)
+                use_zstream = True
 
             result.append({
-                'release':       release,
-                'major':         major,
-                'is_ga':         is_ga,
-                'latest_z_stream': latest_z_stream,
+                'release':     release,
+                'major':       major,
+                'is_ga':       is_ga,
+                'use_zstream': use_zstream,
             })
     return result
 
