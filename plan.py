@@ -37,7 +37,7 @@ from caupdate.release import (
     load_errata_map, CA_CERTS_FILE,
 )
 from caupdate.issues import (
-    issue_create, issue_lookup, issue_request_clone,
+    issue_create, issue_lookup, issue_request_clone, has_clone_links,
     make_jira_client, jira_fixversion, bug_summary_short,
 )
 from caupdate.versions import fetch_nss_versions, NSS_BASE_URL
@@ -103,14 +103,20 @@ def _handle_rhel(release, is_ga, latest_z_stream=False):
 
     if is_ga:
         # True GA: create y-stream bug, then request z-stream clones
+        major = safe_int(release_get_major(release))
         bugnumber, issue = issue_lookup(Jira, release, ver, packages, year)
         if bugnumber == '0':
             bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=False, year=year)
-            if issue is not None and safe_int(release_get_major(release)) > 8:
-                print(f'  requesting z-stream clones for {release}')
-                issue_request_clone(Jira, issue, dry_run=DRY_RUN)
+        # Request clones if the GA bug has none yet (covers first creation
+        # and the case where a previous clone request failed)
+        if bugnumber not in ('0', 'DRY-0') and major > 8:
+            if not has_clone_links(Jira, bugnumber):
+                print(f'  no clone links found — requesting z-stream clones for {release}')
+                issue_request_clone(Jira, issue or bugnumber, dry_run=DRY_RUN)
+            else:
+                print(f'  clones already exist for {bugnumber}')
     elif latest_z_stream:
         # z-stream-only major (e.g. RHEL 8): create z-stream bug directly
         bugnumber, _ = issue_lookup(Jira, release, ver, packages, year, zstream=True)
