@@ -29,9 +29,6 @@ import json
 import datetime
 import requests
 
-from jwcrypto.common import json_encode
-from jwcrypto import jwk, jwe
-
 from caupdate.release import (
     release_get_major, safe_int,
     get_need_zstream_clone,
@@ -63,6 +60,11 @@ ca_certs_file     = CA_CERTS_FILE
 
 def make_pat(pat_key_json, jira_user, jira_api_key):
     """Encrypt Jira credentials as a JWE PAT for cryptosvc."""
+    try:
+        from jwcrypto.common import json_encode
+        from jwcrypto import jwk, jwe
+    except ImportError:
+        raise RuntimeError("jwcrypto is required for cryptosvc integration: pip install jwcrypto")
     key = jwk.JWK(**json.loads(pat_key_json))
     token = jwe.JWE(
         json_encode({'user': jira_user, 'apikey': jira_api_key}),

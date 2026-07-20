@@ -1,0 +1,8 @@
+requests
+requests_kerberos
+requests_toolbelt
+python-gitlab
+jira
+asn1
+gitpython
+jwcrypto
