@@ -146,70 +146,43 @@ def transition_to_new(issue_key):
         print(f'    ERROR: {e}')
     return False
 
-SPLIT_LINK_TYPE_ID = '10120'  # "split from" / "split to" in Jira
+def cryptosvc_post(path, body):
+    """POST to a cryptosvc endpoint with Kerberos + PAT auth."""
+    url = cryptosvc_url.rstrip('/') + path
+    headers = {
+        'Access-Token': cryptosvc_token,
+        'PAT':          cryptosvc_pat,
+        'Content-Type': 'application/json',
+    }
+    r = requests.post(url, headers=headers, json=body,
+                      timeout=60, verify=ca_certs_file, auth=HTTPKerberosAuth())
+    return r
 
-def set_triage_fields(bugnumber):
-    """Set priority/severity/regression directly on the RHEL bug."""
-    return put_field(bugnumber, {
-        'priority':          {'name': 'Normal'},
-        'customfield_10840': {'value': 'Moderate'},  # severity
-        'customfield_10623': {'value': 'No'},         # regression
-    })
-
-def transition_issue(issue_key, target_state):
-    """Transition issue to the named target state."""
+def triage_rhel_bug(bugnumber):
+    """Triage a RHEL bug via cryptosvc, matching exactly what the browser does:
+    1. POST update fields (priority/severity/regression) — separate request
+    2. POST status='Planning' (capital P) — triggers transition + create_splits
+    """
     if DRY_RUN:
-        print(f'    DRY_RUN: would transition {issue_key} → {target_state}')
+        print(f'    DRY_RUN: would triage {bugnumber} via cryptosvc')
         return True
-    try:
-        r = requests.get(f'{Jira.url}/rest/api/3/issue/{issue_key}/transitions',
-                         headers=Jira._headers(), timeout=30)
-        for t in r.json().get('transitions', []):
-            if t['to']['name'].lower() == target_state.lower():
-                resp = requests.post(
-                    f'{Jira.url}/rest/api/3/issue/{issue_key}/transitions',
-                    json={'transition': {'id': t['id']}},
-                    headers=Jira._headers(), timeout=30)
-                return resp.status_code == 204
-        print(f'    WARNING: no transition to "{target_state}" found')
-    except Exception as e:
-        print(f'    ERROR transitioning {issue_key}: {e}')
+
+    # Step 1: set fields (separate from the status trigger)
+    r = cryptosvc_post('/jira/triage',
+                       {'issueid': bugnumber,
+                        'update': {'priority':   'Normal',
+                                   'severity':   'Moderate',
+                                   'regression': 'No'}})
+    if r.status_code not in (200, 202):
+        print(f'    WARNING: field update failed: {r.status_code}')
+
+    # Step 2: status only — triggers transition + story points + create_splits
+    r = cryptosvc_post('/jira/triage',
+                       {'issueid': bugnumber, 'status': 'Planning'})
+    if r.status_code in (200, 202):
+        return True
+    print(f'    FAILED {r.status_code}: {r.text[:120]}')
     return False
-
-def create_splits(bugnumber):
-    """Create [DEV] and [QE] CRYPTO task issues linked to the RHEL bug."""
-    try:
-        issue   = Jira.get(bugnumber)
-        summary = issue.get('fields', {}).get('summary', bugnumber)
-        comps   = [{'name': c['name']}
-                   for c in issue.get('fields', {}).get('components', [])]
-    except Exception as e:
-        print(f'    WARNING: could not fetch {bugnumber}: {e}')
-        return
-
-    for prefix, desc in (('[DEV]', f'Development activities to resolve {bugnumber}'),
-                         ('[QE]',  f'Quality assurance activities for {bugnumber}')):
-        fields = {
-            'project':   {'key': 'CRYPTO'},
-            'issuetype': {'name': 'Task'},
-            'summary':   f'{prefix} {summary}',
-        }
-        if comps:
-            fields['components'] = comps
-        try:
-            result  = Jira.create(fields)
-            new_key = result.get('key', '?')
-            # Link back to RHEL bug with the split link type
-            link_payload = {
-                'type':         {'id': SPLIT_LINK_TYPE_ID},
-                'inwardIssue':  {'key': bugnumber},
-                'outwardIssue': {'key': new_key},
-            }
-            requests.post(f'{Jira.url}/rest/api/3/issueLink',
-                          json=link_payload, headers=Jira._headers(), timeout=30)
-            print(f'    created {new_key} ({prefix})')
-        except Exception as e:
-            print(f'    WARNING: could not create {prefix} split: {e}')
 
 # ── process rhel.list ─────────────────────────────────────────────────────────
 
@@ -237,24 +210,15 @@ for parts in entries:
     if transition_to_new(bugnumber):
         print('OK')
 
-    # 2. Set triage fields (priority/severity/regression) directly
-    print(f'  setting triage fields ...', end=' ')
-    if set_triage_fields(bugnumber):
-        print('OK')
+    # 2. Triage via cryptosvc: set fields, then trigger transition + splits
+    print(f'  triaging via cryptosvc ...', end=' ')
+    if triage_rhel_bug(bugnumber):
+        print('OK — [DEV]/[QE] splits created')
 
-    # 3. Transition to PLANNING
-    print(f'  transitioning to PLANNING ...', end=' ')
-    if transition_issue(bugnumber, 'PLANNING'):
-        print('OK')
-
-    # 4. Zero story points
+    # 3. Zero story points (cryptosvc also does this, but be explicit)
     print(f'  zeroing story points ...', end=' ')
     if put_field(bugnumber, {'customfield_10028': 0}):
         print('OK')
-
-    # 5. Create [DEV]/[QE] CRYPTO splits directly
-    print(f'  creating [DEV]/[QE] splits ...')
-    create_splits(bugnumber)
 
     # 4. SE or active release specific handling
     if release in se_releases:
