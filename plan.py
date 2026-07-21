@@ -66,28 +66,62 @@ def _cryptosvc_headers():
         'Content-Type': 'application/json',
     }
 
-def _triage_via_cryptosvc(bugnumber):
-    """Call cryptosvc /jira/triage to set priority/severity/regression and
-    create [DEV]/[QE] CRYPTO splits. Only called on freshly created bugs."""
-    if not (cryptosvc_url and cryptosvc_access_token and cryptosvc_pat):
-        return
-    if bugnumber in ('0', 'DRY-0'):
+_SPLIT_LINK_TYPE_ID = '10120'
+
+def _triage_rhel_bug(bugnumber):
+    """Set triage fields, transition to PLANNING, and create [DEV]/[QE] CRYPTO
+    splits directly via Jira v3 API. Only called on freshly created bugs."""
+    if not Jira or bugnumber in ('0', 'DRY-0'):
         return
     if DRY_RUN:
-        print(f'  DRY_RUN: would triage {bugnumber} via cryptosvc')
+        print(f'  DRY_RUN: would triage {bugnumber}')
         return
-    url  = cryptosvc_url.rstrip('/') + '/jira/triage'
-    body = {
-        'issueid': bugnumber,
-        'update':  {'priority': 'Normal', 'severity': 'Moderate', 'regression': 'No'},
-        'status':  'PLANNING',
-    }
-    r = requests.post(url, headers=_cryptosvc_headers(), json=body, timeout=30,
-                      verify=ca_certs_file, auth=HTTPKerberosAuth())
-    if r.status_code in (200, 202):
-        print(f'  triaged {bugnumber} — [DEV]/[QE] splits created')
-    else:
-        print(f'  WARNING: triage of {bugnumber} failed: {r.status_code} {r.text[:120]}')
+    # Set priority / severity / regression
+    r = requests.put(f'{Jira.url}/rest/api/3/issue/{bugnumber}',
+                     json={'fields': {'priority':          {'name': 'Normal'},
+                                      'customfield_10840': {'value': 'Moderate'},
+                                      'customfield_10623': {'value': 'No'},
+                                      'customfield_10028': 0}},
+                     headers=Jira._headers(), timeout=30)
+    if r.status_code != 204:
+        print(f'  WARNING: could not set triage fields on {bugnumber}: {r.status_code}')
+
+    # Transition to PLANNING
+    r = requests.get(f'{Jira.url}/rest/api/3/issue/{bugnumber}/transitions',
+                     headers=Jira._headers(), timeout=30)
+    for t in r.json().get('transitions', []):
+        if t['to']['name'].lower() == 'planning':
+            requests.post(f'{Jira.url}/rest/api/3/issue/{bugnumber}/transitions',
+                          json={'transition': {'id': t['id']}},
+                          headers=Jira._headers(), timeout=30)
+            break
+
+    # Create [DEV] and [QE] CRYPTO splits
+    try:
+        issue   = Jira.get(bugnumber)
+        summary = issue.get('fields', {}).get('summary', bugnumber)
+        comps   = [{'name': c['name']}
+                   for c in issue.get('fields', {}).get('components', [])]
+    except Exception as e:
+        print(f'  WARNING: could not fetch {bugnumber} for splits: {e}')
+        return
+    for prefix, desc in (('[DEV]', f'Development activities to resolve {bugnumber}'),
+                         ('[QE]',  f'Quality assurance activities for {bugnumber}')):
+        fields = {'project': {'key': 'CRYPTO'}, 'issuetype': {'name': 'Task'},
+                  'summary': f'{prefix} {summary}'}
+        if comps:
+            fields['components'] = comps
+        try:
+            result  = Jira.create(fields)
+            new_key = result.get('key', '?')
+            requests.post(f'{Jira.url}/rest/api/3/issueLink',
+                          json={'type': {'id': _SPLIT_LINK_TYPE_ID},
+                                'inwardIssue': {'key': bugnumber},
+                                'outwardIssue': {'key': new_key}},
+                          headers=Jira._headers(), timeout=30)
+            print(f'  created {new_key} ({prefix})')
+        except Exception as e:
+            print(f'  WARNING: could not create {prefix} split: {e}')
 
 def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     """Call the existing cryptosvc /jira/errata/create endpoint.
@@ -138,7 +172,7 @@ def _handle_rhel(release, is_ga, use_zstream=False, is_sustaining=False):
             bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=use_zstream, year=year)
-            _triage_via_cryptosvc(bugnumber)
+            _triage_rhel_bug(bugnumber)
         if bugnumber not in ('0', 'DRY-0'):
             if not has_clone_links(Jira, bugnumber):
                 print(f'  no clone links — requesting z-stream clones for {release}')
