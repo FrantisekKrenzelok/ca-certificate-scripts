@@ -103,6 +103,52 @@ def _triage_rhel_bug(bugnumber):
     else:
         print(f'  WARNING: triage status failed: {r.status_code} {r.text[:120]}')
 
+def _set_split_sprints(bugnumber):
+    """After triage, find [DEV]/[QE] splits linked to the RHEL bug and set
+    their sprints via cryptosvc's sprint-add update. Uses dev_sprint and
+    qe_sprint globals."""
+    if not dev_sprint and not qe_sprint:
+        return
+    if not Jira or bugnumber in ('0', 'DRY-0'):
+        return
+    try:
+        issue = Jira.get(bugnumber)
+        links = issue.get('fields', {}).get('issuelinks', [])
+    except Exception as e:
+        print(f'  WARNING: could not fetch issue links for {bugnumber}: {e}')
+        return
+
+    for link in links:
+        if link.get('type', {}).get('id') != '10120':  # split link type
+            continue
+        linked = link.get('outwardIssue') or link.get('inwardIssue', {})
+        linked_key = linked.get('key', '')
+        if not linked_key.startswith('CRYPTO-'):
+            continue
+        try:
+            li      = Jira.get(linked_key)
+            summary = li.get('fields', {}).get('summary', '')
+        except Exception:
+            continue
+
+        if summary.startswith('[DEV]') and dev_sprint:
+            sprint = dev_sprint
+        elif summary.startswith('[QE]') and qe_sprint:
+            sprint = qe_sprint
+        else:
+            continue
+
+        if DRY_RUN:
+            print(f'  DRY_RUN: would set sprint {sprint} on {linked_key}')
+            continue
+        r = _cryptosvc_post('/jira/triage',
+                            {'issueid': linked_key,
+                             'update': {'sprint-add': int(sprint)}})
+        if r.status_code in (200, 202):
+            print(f'  set sprint {sprint} on {linked_key} ({summary[:30]})')
+        else:
+            print(f'  WARNING: sprint set failed for {linked_key}: {r.status_code}')
+
 def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     """Call the existing cryptosvc /jira/errata/create endpoint.
     Returns the CRYPTO issue key string on success, None on failure."""
@@ -153,6 +199,7 @@ def _handle_rhel(release, is_ga, use_zstream=False, is_sustaining=False):
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=use_zstream, year=year)
             _triage_rhel_bug(bugnumber)
+            _set_split_sprints(bugnumber)
         if bugnumber not in ('0', 'DRY-0'):
             if not has_clone_links(Jira, bugnumber):
                 print(f'  no clone links — requesting z-stream clones for {release}')
@@ -266,7 +313,8 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
 try:
     opts, _ = getopt.getopt(
         sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora',
-                                        'crypto-epic-parent='])
+                                        'crypto-epic-parent=',
+                                        'dev-sprint=', 'qe-sprint='])
 except getopt.GetoptError as err:
     print(err)
     print('Usage: plan.py -f <firefox> [-n <nss_version>] [-s <mcs_version>] [--rhel | --fedora] [--dry-run] [--resync]')
@@ -287,6 +335,8 @@ cryptosvc_access_token = None
 cryptosvc_pat          = None
 crypto_epic_parent     = None
 se_contact             = None
+dev_sprint             = None
+qe_sprint              = None
 config = {}
 
 for config_line in open(config_file, 'r'):
@@ -309,6 +359,8 @@ for config_line in open(config_file, 'r'):
     if key == 'cryptosvc_pat':            cryptosvc_pat = value
     if key == 'crypto_epic_parent':       crypto_epic_parent = value
     if key == 'se_contact':               se_contact = value
+    if key == 'dev_sprint':               dev_sprint = value
+    if key == 'qe_sprint':               qe_sprint  = value
     if key == 'dry_run':
         DRY_RUN = value.lower() == 'true'
 
@@ -322,6 +374,8 @@ for opt, arg in opts:
     elif opt == '--dry-run': DRY_RUN = True
     elif opt == '--resync':              resync = True
     elif opt == '--crypto-epic-parent':  crypto_epic_parent = arg
+    elif opt == '--dev-sprint':          dev_sprint = arg
+    elif opt == '--qe-sprint':           qe_sprint  = arg
     elif opt == '--rhel':    mode = 'rhel'
     elif opt == '--fedora':  mode = 'fedora'
 
