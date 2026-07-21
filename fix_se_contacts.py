@@ -1,27 +1,29 @@
 #!/usr/bin/python3
 # vim:set et sw=4:
 #
-# fix_se_contacts.py - Fix QA contacts for the current update cycle:
+# fix_se_contacts.py - Retroactively fix all RHEL bugs in meta/rhel.list:
 #
-#   SE releases  (E4S/AUS/TUS): set se_contact as QA (customfield_10470)
-#                                on the RHEL bug.
-#   Active releases:             set qe as assignee on the 'Errata Workflow
-#                                Checklist' and 'Automated Testing' sub-issues
-#                                of the CRYPTO epic.
+#   1. Transition to "New" (reset state)
+#   2. Call cryptosvc triage: sets priority/severity/regression and creates
+#      [DEV]/[QE] CRYPTO splits
+#   3. SE releases:  set se_contact as QA (customfield_10470) on RHEL bug
+#      Active releases: set qe as assignee on [DEV]/[QE] sub-issues
 #
 # Usage:
-#   ./fix_se_contacts.py [--dry-run]
-#   ./fix_se_contacts.py [--se-contact email] [--qe email] [--dry-run]
+#   ./fix_se_contacts.py [--dry-run] [--se-contact email] [--qe email]
 
 import sys
 import getopt
 import requests
+from requests_kerberos import HTTPKerberosAuth
 
 config_file = './config.cfg'
 rhel_list   = './meta/rhel.list'
 
 from caupdate.issues import make_jira_client
-from caupdate.release import discover_rhel_releases, get_ga_list, load_errata_map, CA_CERTS_FILE
+from caupdate.release import (
+    discover_rhel_releases, get_ga_list, load_errata_map, CA_CERTS_FILE
+)
 
 QA_SUMMARIES = ('Errata Workflow Checklist', 'Automated Testing')
 
@@ -33,6 +35,10 @@ qe             = None
 se_contact     = None
 errata_url     = 'https://errata.devel.redhat.com'
 errata_cache   = './errata_cache'
+cryptosvc_url  = None
+cryptosvc_token = None
+cryptosvc_pat  = None
+ca_certs_file  = CA_CERTS_FILE
 
 try:
     opts, _ = getopt.getopt(sys.argv[1:], '', ['dry-run', 'se-contact=', 'qe='])
@@ -47,12 +53,15 @@ for config_line in open(config_file):
         continue
     key, value = line.split(':', 1)
     value = value.strip()
-    if key == 'jira_url':      jira_url_base = value
-    if key == 'jira_api_key':  jira_api_key  = value
-    if key == 'jira_user':     jira_user     = value
-    if key == 'qe':            qe            = value
-    if key == 'se_contact':    se_contact    = value
-    if key == 'errata_url':    errata_url    = value
+    if key == 'jira_url':               jira_url_base  = value
+    if key == 'jira_api_key':           jira_api_key   = value
+    if key == 'jira_user':              jira_user      = value
+    if key == 'qe':                     qe             = value
+    if key == 'se_contact':             se_contact     = value
+    if key == 'errata_url':             errata_url     = value
+    if key == 'cryptosvc_url':          cryptosvc_url  = value
+    if key == 'cryptosvc_access_token': cryptosvc_token = value
+    if key == 'cryptosvc_pat':          cryptosvc_pat  = value
 
 for opt, arg in opts:
     if opt == '--dry-run':     DRY_RUN    = True
@@ -64,6 +73,9 @@ if not se_contact:
     sys.exit(1)
 if not qe:
     print('qe required. Use --qe or set qe in config.cfg')
+    sys.exit(1)
+if not cryptosvc_url or not cryptosvc_token or not cryptosvc_pat:
+    print('cryptosvc_url, cryptosvc_access_token, cryptosvc_pat required in config.cfg')
     sys.exit(1)
 
 # ── connect ───────────────────────────────────────────────────────────────────
@@ -100,12 +112,12 @@ se_releases = {r['release'] for r in discover_rhel_releases(errata_map, ga_list)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def put_field(issue_key, fields):
+def put_field(key, fields):
     if DRY_RUN:
-        print(f'    DRY_RUN: PUT {issue_key} {fields}')
+        print(f'    DRY_RUN: PUT {key} {fields}')
         return True
     try:
-        r = requests.put(f'{Jira.url}/rest/api/3/issue/{issue_key}',
+        r = requests.put(f'{Jira.url}/rest/api/3/issue/{key}',
                          json={'fields': fields}, headers=Jira._headers(), timeout=30)
         if r.status_code == 204:
             return True
@@ -114,11 +126,53 @@ def put_field(issue_key, fields):
         print(f'    ERROR: {e}')
     return False
 
+def transition_to_new(issue_key):
+    """Find the transition that leads to 'New' status and apply it."""
+    if DRY_RUN:
+        print(f'    DRY_RUN: would transition {issue_key} to New')
+        return True
+    try:
+        r = requests.get(f'{Jira.url}/rest/api/3/issue/{issue_key}/transitions',
+                         headers=Jira._headers(), timeout=30)
+        for t in r.json().get('transitions', []):
+            if t['to']['name'].lower() in ('new', 'to do', 'open'):
+                resp = requests.post(
+                    f'{Jira.url}/rest/api/3/issue/{issue_key}/transitions',
+                    json={'transition': {'id': t['id']}},
+                    headers=Jira._headers(), timeout=30)
+                return resp.status_code == 204
+        print(f'    WARNING: no transition to New found for {issue_key}')
+    except Exception as e:
+        print(f'    ERROR: {e}')
+    return False
+
+def triage_via_cryptosvc(bugnumber):
+    """Call cryptosvc triage: sets priority/severity/regression + creates DEV/QE splits."""
+    url  = cryptosvc_url.rstrip('/') + '/jira/triage'
+    headers = {
+        'Access-Token': cryptosvc_token,
+        'PAT':          cryptosvc_pat,
+        'Content-Type': 'application/json',
+    }
+    body = {
+        'issueid': bugnumber,
+        'update':  {'priority': 'Normal', 'severity': 'Moderate', 'regression': 'No'},
+        'status':  'PLANNING',
+    }
+    if DRY_RUN:
+        print(f'    DRY_RUN: would triage {bugnumber} via cryptosvc')
+        return True
+    r = requests.post(url, headers=headers, json=body, timeout=30,
+                      verify=ca_certs_file, auth=HTTPKerberosAuth())
+    if r.status_code in (200, 202):
+        return True
+    print(f'    FAILED {r.status_code}: {r.text[:120]}')
+    return False
+
 # ── process rhel.list ─────────────────────────────────────────────────────────
 
 try:
-    entries = [line.strip().split(':') for line in open(rhel_list)
-               if line.strip()]
+    entries = [line.strip().split(':') for line in open(rhel_list) if line.strip()]
 except FileNotFoundError:
     print(f'{rhel_list} not found')
     sys.exit(1)
@@ -134,39 +188,45 @@ for parts in entries:
         print(f'{release}: no RHEL bug yet, skipping')
         continue
 
-    # Always zero out story points on the RHEL bug
-    print(f'{release}: {bugnumber} — zeroing story points', end=' ... ')
+    print(f'\n{release}: {bugnumber}')
+
+    # 1. Transition to New
+    print(f'  transitioning to New ...', end=' ')
+    if transition_to_new(bugnumber):
+        print('OK')
+
+    # 2. Triage via cryptosvc (sets priority/severity/regression, creates DEV/QE splits)
+    print(f'  triaging via cryptosvc ...', end=' ')
+    if triage_via_cryptosvc(bugnumber):
+        print('OK — [DEV]/[QE] splits created')
+
+    # 3. Zero story points (triage already does this but be explicit)
+    print(f'  zeroing story points ...', end=' ')
     if put_field(bugnumber, {'customfield_10028': 0}):
         print('OK')
 
+    # 4. SE or active release specific handling
     if release in se_releases:
-        # ── SE release: set SE contact as QA on the RHEL bug ─────────────────
-        print(f'{release} [SE]: setting QA={se_contact} on {bugnumber}', end=' ... ')
+        print(f'  [SE] setting QA contact = {se_contact} ...', end=' ')
         if put_field(bugnumber, {'customfield_10470': {'accountId': se_account}}):
             print('OK')
-
     else:
-        # ── Active release: set qe as assignee on CRYPTO QA sub-issues ───────
+        # Set qe as assignee on [DEV]/[QE] sub-issues in CRYPTO
         if not crypto_key or not crypto_key.startswith('CRYPTO-'):
-            print(f'{release}: no CRYPTO epic yet, skipping')
+            print(f'  no CRYPTO epic, skipping QE sub-issue assignment')
             continue
-        print(f'{release}: setting assignee={qe} on QA sub-issues of {crypto_key}')
         jql = f'project=CRYPTO AND "Epic Link" = "{crypto_key}"'
         try:
-            all_children = Jira.search(jql, fields=['key', 'summary'], max_results=20)
+            children = Jira.search(jql, fields=['key', 'summary'], max_results=20)
         except Exception as e:
-            print(f'  WARNING: search failed: {e}')
+            print(f'  WARNING: could not search CRYPTO children: {e}')
             continue
-        if not all_children:
-            print(f'  WARNING: no children found for {crypto_key}')
-            continue
-        for issue in all_children:
+        for issue in children:
             key     = issue['key']
             summary = issue.get('fields', {}).get('summary', '')
             if summary not in QA_SUMMARIES:
-                print(f'  skipping {key} ({summary})')
                 continue
-            print(f'  {key} ({summary})', end=' ... ')
+            print(f'  assigning {qe} to {key} ({summary}) ...', end=' ')
             if put_field(key, {'assignee': {'accountId': qe_account}}):
                 print('OK')
 

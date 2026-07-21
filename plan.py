@@ -59,17 +59,41 @@ ca_certs_file     = CA_CERTS_FILE
 
 # ── cryptosvc helpers ─────────────────────────────────────────────────────────
 
+def _cryptosvc_headers():
+    return {
+        'Access-Token': cryptosvc_access_token,
+        'PAT':          cryptosvc_pat,
+        'Content-Type': 'application/json',
+    }
+
+def _triage_via_cryptosvc(bugnumber):
+    """Call cryptosvc /jira/triage to set priority/severity/regression and
+    create [DEV]/[QE] CRYPTO splits. Only called on freshly created bugs."""
+    if not (cryptosvc_url and cryptosvc_access_token and cryptosvc_pat):
+        return
+    if bugnumber in ('0', 'DRY-0'):
+        return
+    if DRY_RUN:
+        print(f'  DRY_RUN: would triage {bugnumber} via cryptosvc')
+        return
+    url  = cryptosvc_url.rstrip('/') + '/jira/triage'
+    body = {
+        'issueid': bugnumber,
+        'update':  {'priority': 'Normal', 'severity': 'Moderate', 'regression': 'No'},
+        'status':  'PLANNING',
+    }
+    r = requests.post(url, headers=_cryptosvc_headers(), json=body, timeout=30,
+                      verify=ca_certs_file, auth=HTTPKerberosAuth())
+    if r.status_code in (200, 202):
+        print(f'  triaged {bugnumber} — [DEV]/[QE] splits created')
+    else:
+        print(f'  WARNING: triage of {bugnumber} failed: {r.status_code} {r.text[:120]}')
 
 def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     """Call the existing cryptosvc /jira/errata/create endpoint.
     Returns the CRYPTO issue key string on success, None on failure."""
     import re as _re
-    url = cryptosvc_url.rstrip('/') + '/jira/errata/create'
-    headers = {
-        'Access-Token': cryptosvc_access_token,
-        'PAT': cryptosvc_pat,
-        'Content-Type': 'application/json',
-    }
+    url  = cryptosvc_url.rstrip('/') + '/jira/errata/create'
     body = {
         'component':   component,
         'fixversion':  fixversion,
@@ -80,7 +104,7 @@ def cryptosvc_create_errata(component, fixversion, bugs, description=''):
     if DRY_RUN:
         print(f'  DRY_RUN: POST {url} {body}')
         return 'DRY-CRYPTO-0'
-    r = requests.post(url, headers=headers, json=body, timeout=30,
+    r = requests.post(url, headers=_cryptosvc_headers(), json=body, timeout=30,
                       verify=ca_certs_file, auth=HTTPKerberosAuth())
     if r.status_code == 409:
         print(f'  CRYPTO errata epic already exists for {component}/{fixversion}')
@@ -114,6 +138,7 @@ def _handle_rhel(release, is_ga, use_zstream=False, is_sustaining=False):
             bugnumber, issue = issue_create(
                 Jira, release, ver, nss_ver, firefox_version, mcs_ver,
                 packages, zstream=use_zstream, year=year)
+            _triage_via_cryptosvc(bugnumber)
         if bugnumber not in ('0', 'DRY-0'):
             if not has_clone_links(Jira, bugnumber):
                 print(f'  no clone links — requesting z-stream clones for {release}')
