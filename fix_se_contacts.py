@@ -130,14 +130,20 @@ for parts in entries:
     bugnumber  = parts[2]
     crypto_key = parts[8] if len(parts) > 8 else ''
 
+    if not bugnumber or bugnumber == '0':
+        print(f'{release}: no RHEL bug yet, skipping')
+        continue
+
+    # Always zero out story points on the RHEL bug
+    print(f'{release}: {bugnumber} — zeroing story points', end=' ... ')
+    if put_field(bugnumber, {'customfield_10028': 0}):
+        print('OK')
+
     if release in se_releases:
         # ── SE release: set SE contact as QA on the RHEL bug ─────────────────
-        if not bugnumber or bugnumber == '0':
-            print(f'{release}: no RHEL bug yet, skipping')
-            continue
-        print(f'{release} [SE]: setting QA={se_contact} on {bugnumber}')
+        print(f'{release} [SE]: setting QA={se_contact} on {bugnumber}', end=' ... ')
         if put_field(bugnumber, {'customfield_10470': {'accountId': se_account}}):
-            print(f'  OK')
+            print('OK')
 
     else:
         # ── Active release: set qe as assignee on CRYPTO QA sub-issues ───────

@@ -167,16 +167,17 @@ def issue_create(session, release, version, nss_version, firefox_version,
         release += '.z'
 
     fields = {
-        'project':     {'key': JIRA_PROJ},
-        'issuetype':   {'name': JIRA_ISSUE_TYPE},
-        'summary':     bug_summary % (year, version, nss_version,
-                                      firefox_version, mcs_version, release),
-        'description': _adf(bug_description % (version, nss_version, mcs_version)),
-        'fixVersions': [{'name': release}],
-        'components':  [{'name': package}],
-        'priority':    {'name': 'Minor'},
-        'security':    {'name': 'Red Hat Employee'},
-        'labels':      ['Triaged', 'Rebase'],
+        'project':           {'key': JIRA_PROJ},
+        'issuetype':         {'name': JIRA_ISSUE_TYPE},
+        'summary':           bug_summary % (year, version, nss_version,
+                                            firefox_version, mcs_version, release),
+        'description':       _adf(bug_description % (version, nss_version, mcs_version)),
+        'fixVersions':       [{'name': release}],
+        'components':        [{'name': package}],
+        'priority':          {'name': 'Minor'},
+        'security':          {'name': 'Red Hat Employee'},
+        'labels':            ['Triaged', 'Rebase'],
+        'customfield_10028': 0,  # story points
     }
 
     try:
