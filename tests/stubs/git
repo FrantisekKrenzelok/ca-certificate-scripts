@@ -1,0 +1,11 @@
+#!/bin/bash
+# Stub: record git calls, do nothing that touches a real repo
+echo "git $*" >> "${GIT_STUB_LOG:-/tmp/git_stub.log}"
+case "$1" in
+    config)   echo "Test User"; echo "test@example.com" ;;
+    diff)     echo "(stub diff)" ;;
+    add)      ;;
+    status)   echo "M ca-certificates.spec" ;;
+    *)        ;;
+esac
+exit 0
