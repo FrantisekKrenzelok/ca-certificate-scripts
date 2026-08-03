@@ -36,8 +36,8 @@ from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
 from caupdate.release import (
     release_get_major, safe_int,
-    get_need_zstream_clone, is_latest_z_stream,
-    release_requires_build, release_is_centos_stream,
+    get_need_zstream_clone,
+    release_is_centos_stream,
     errata_get_release_info,
     load_errata_map, CA_CERTS_FILE,
 )
@@ -90,7 +90,6 @@ package_tool = {
 }
 
 ga_list = []
-latest_zstreams = []
 errata_map = {}
 config = {}
 Jira = None
@@ -109,17 +108,8 @@ def get_build_packages_dir(distro,package,release) :
         return packages_dir[distro]+"%s/rhel%s-main"%(package,major)
     return packages_dir[distro]+"%s/%s"%(package,release)
 # Release helpers and errata-map functions are in caupdate.release.
-# Wrappers below adapt the module-level ga_list/latest_zstreams globals
-# to the explicit-parameter signatures used in caupdate.
-
 def _get_need_zstream_clone(release):
     return get_need_zstream_clone(release, ga_list)
-
-def _is_latest_z_stream(release):
-    return is_latest_z_stream(release, latest_zstreams)
-
-def _release_requires_build(release):
-    return release_requires_build(release, latest_zstreams)
 
 def _release_is_centos_stream(release):
     return release_is_centos_stream(release, ga_list)
@@ -218,7 +208,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     for package in packages_list :
        description=description+package_description_map[package]+'\n\n'
     description=description+description_base%(release_name,year,version,firefox_version,bugnumber)
-    product = 'ASYNC' if safe_int(release_get_major(release)) > 8 else 'RHEL' # [one build per major release]
+    product = 'RHEL'
     #now build the advisory
     advisory['errata_type']='RHBA'
     advisory['security_impact']='None'
@@ -888,7 +878,7 @@ if glab_api_key != None:
 if GLab != None and centos_fork != None:
     CentOSFork = GLab.projects.get(centos_fork.replace(glab_url_base, ""))
 
-errata_map, ga_list, latest_zstreams = load_errata_map(
+errata_map, ga_list, _ = load_errata_map(
     errata_url_base, errata_cache_file, ca_certs_file, force_resync=resync)
 
 if get_ga :
@@ -980,8 +970,7 @@ for release in rhel_packages:
             bugnumber,issue=_issue_lookup(release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
-                zstream = _is_latest_z_stream(release) # relevant for 8^
-                bugnumber,issue=_issue_create(release,version,nss_version,firefox_version,mcs_version,packages, zstream)
+                bugnumber,issue=_issue_create(release,version,nss_version,firefox_version,mcs_version,packages, False)
 
                 if bugnumber == "0":
                     entry['state']='need bug'
@@ -1036,16 +1025,8 @@ for release in rhel_packages:
                       entry['state'] = 'waiting centos merge'
                       continue
 
-              # [one build per major release]
-              # build only if release is that latest z stream or rhel-8 and older
-              if _release_requires_build(release):
-                  nvr = build(release,package)
-                  entry['nvr'] = add_nvr(entry['nvr'],nvr)
-
-    if not _release_requires_build(release):
-        # [one build per major release]
-        # skip (ASYNC) errata creation if not the latest z stream (only rhel-9^)
-        continue
+              nvr = build(release,package)
+              entry['nvr'] = add_nvr(entry['nvr'],nvr)
 
     builds=entry['nvr']
     erratanumber=entry['erratanumber']
