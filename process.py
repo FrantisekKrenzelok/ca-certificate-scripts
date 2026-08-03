@@ -597,6 +597,12 @@ def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
 
     mr = repo_fork.mergerequests.create(arguments)
 
+    try:
+        mr.merge(merge_when_pipeline_succeeds=True)
+        print(f"Set automerge on MR !{mr.iid}")
+    except Exception as e:
+        print(f"WARNING: could not set automerge on MR !{mr.iid}: {e}")
+
     return mr
 
 def gitlab_get_mr(project, id):
