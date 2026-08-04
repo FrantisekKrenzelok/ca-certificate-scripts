@@ -343,9 +343,12 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
                                     also request 'All Active Z-streams' clones.
     is_ga=False                   — other z-streams: wait for the cloned bug.
 
-    A major is "z-stream-only" when none of its errata product versions end with
-    '.GA' (e.g. 'RHEL-8.10.0.Z.MAIN+EUS'). The latest release of such a major
-    is treated as the head and gets is_ga=True so the clone logic runs.
+    For majors with no explicit '.GA' product, the head release is further
+    refined by the EUS flag in the errata product name:
+      MAIN+EUS  → already shipped its GA, all future updates are z-stream
+                  → use_zstream=True  (e.g. rhel-8.10 → bug as rhel-8.10.z)
+      MAIN only → upcoming GA not yet released
+                  → use_zstream=False (e.g. rhel-9.9  → bug as rhel-9.9)
     """
     by_major = {}
     for release in errata_map.keys():
@@ -370,15 +373,21 @@ def discover_rhel_releases(errata_map, ga_list, min_major=8):
         )
 
         for i, release in enumerate(sorted_releases):
+            is_head = (i == 0)
+            pv_name = (errata_map.get(release) or {}).get('name', '')
+
             if has_true_ga:
                 is_ga       = release in ga_list
                 use_zstream = False
             else:
-                is_ga       = (i == 0)
-                use_zstream = True
-
-            is_head = (i == 0)
-            pv_name = (errata_map.get(release) or {}).get('name', '')
+                is_ga = is_head
+                # Distinguish "awaiting GA" from "truly z-stream-only":
+                # MAIN+EUS (or any EUS) → already shipped its GA, future
+                #   updates are z-stream → use_zstream=True (e.g. rhel-8.10.z)
+                # MAIN only (no EUS)    → upcoming GA not yet released →
+                #   use_zstream=False   (e.g. rhel-9.9, not rhel-9.9.z)
+                # Non-head z-streams always use .z
+                use_zstream = (not is_head) or ('EUS' in pv_name)
             if not _relevant_release(pv_name, is_head):
                 continue
 
