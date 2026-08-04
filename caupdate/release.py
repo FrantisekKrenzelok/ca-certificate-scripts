@@ -38,8 +38,11 @@ def get_need_zstream_clone(release, ga_list):
     """Return True if this release needs a z-stream bug clone from the y-stream."""
     if safe_int(release_get_major(release)) < 8:
         return False
-    release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
-    return release not in ga_list
+    # Normalise 2-part (rhel-X.Y) to 3-part (rhel-X.Y.0) for ga_list comparison,
+    # but also accept the original form — RHEL 10 uses 2-part keys in the errata
+    # map so ga_list may contain 'rhel-10.3' while the normalised form is 'rhel-10.3.0'.
+    normalised = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
+    return normalised not in ga_list and release not in ga_list
 
 def is_latest_z_stream(release, latest_zstreams):
     """Return True if this is the latest z-stream for its major version."""

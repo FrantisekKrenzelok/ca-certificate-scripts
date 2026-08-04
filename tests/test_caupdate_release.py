@@ -107,14 +107,13 @@ class TestGetNeedZstreamClone:
         ga = ['rhel-8.10.0']
         assert rel.get_need_zstream_clone('rhel-8.8.0', ga) is True
 
-    def test_rhel10_ga(self):
-        # rhel-10.3 (2-part) is normalised to rhel-10.3.0 before the ga_list check.
-        # ga_list from get_ga_list() has 'rhel-10.3' (the errata map key),
-        # NOT 'rhel-10.3.0'.  So get_need_zstream_clone returns True for 2-part
-        # RHEL 10 releases — the caller (discover_rhel_releases) uses is_ga
-        # directly instead of this function for RHEL 10.
-        assert rel.get_need_zstream_clone('rhel-10.3', ['rhel-10.3']) is True
-        # Passing the normalised form works correctly:
+    def test_rhel10_ga_two_part_key(self):
+        # RHEL 10 uses 2-part keys in the errata map ('rhel-10.3', not 'rhel-10.3.0').
+        # get_need_zstream_clone must accept both forms so the GA is recognised.
+        assert rel.get_need_zstream_clone('rhel-10.3', ['rhel-10.3']) is False
+
+    def test_rhel10_ga_three_part_key(self):
+        # Also works if caller provides the normalised 3-part form
         assert rel.get_need_zstream_clone('rhel-10.3', ['rhel-10.3.0']) is False
 
     def test_rhel10_zstream(self):
