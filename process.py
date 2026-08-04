@@ -614,6 +614,34 @@ def gitlab_get_mr(project, id):
 
     return mr
 
+def gitlab_get_mr_ci_status(mr):
+    """Return the status of the latest pipeline on an MR.
+
+    Returns one of:
+      'pending'  — pipeline queued or running (wait longer)
+      'passed'   — CI succeeded
+      'failed'   — CI failed (needs manual intervention)
+      'none'     — no pipeline found yet
+    """
+    if mr is None:
+        return 'none'
+    try:
+        pipelines = mr.pipelines.list(get_all=False, per_page=1)
+        if not pipelines:
+            return 'none'
+        status = pipelines[0].status
+        # GitLab pipeline statuses:
+        # created, waiting_for_resource, preparing, pending, running,
+        # success, failed, canceled, skipped, manual, scheduled
+        if status == 'success':
+            return 'passed'
+        if status in ('failed', 'canceled'):
+            return 'failed'
+        return 'pending'   # running / created / waiting / etc.
+    except Exception as e:
+        print(f'WARNING: could not get pipeline status for MR !{mr.iid}: {e}')
+        return 'none'
+
 #
 #    local utility functions
 #
@@ -770,7 +798,7 @@ def build(release,package):
 #
 #######################################################
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run"])
+    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run","loop","interval="])
 except getopt.GetoptError as err:
     print(err)
     print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-j jiraaurlbase]')
@@ -778,6 +806,8 @@ except getopt.GetoptError as err:
 
 resync=False
 get_ga=False
+loop_mode=False
+loop_interval=300   # seconds between passes in loop mode (default 5 min)
 try:
     f = open(ckbiver_file, "r")
     version=f.read().strip()
@@ -863,6 +893,10 @@ for opt, arg in opts:
         get_ga = True
     elif opt == '--dry-run':
         DRY_RUN = True
+    elif opt == '--loop':
+        loop_mode = True
+    elif opt == '--interval':
+        loop_interval = int(arg)
     elif opt == '--getconfig' :
         if not arg in config:
             print("No arg found");
@@ -1027,8 +1061,14 @@ for release in rhel_packages:
                   elif (mr.state == "merged"):
                       git_pull(get_build_packages_dir(distro, package, release))
                   else:
-                      print(f"Merge request status: {mr.state}");
-                      entry['state'] = 'waiting centos merge'
+                      ci_status = gitlab_get_mr_ci_status(mr)
+                      print(f"Merge request status: {mr.state}, CI: {ci_status}")
+                      if ci_status == 'failed':
+                          entry['state'] = 'centos ci failed'
+                      elif ci_status == 'passed':
+                          entry['state'] = 'waiting centos merge'
+                      else:
+                          entry['state'] = 'waiting centos ci'
                       continue
 
               nvr = build(release,package)
@@ -1222,3 +1262,30 @@ for release in fedora_packages :
         (task, nvr, state) = build_get_info(release, package)
         if (task != '') :
             print("    %s/taskinfo?taskID=%s (%s,%s)"%(koji_url_base,task,nvr,state))
+
+#######################################################
+#
+# Loop mode: re-exec if not all releases are terminal
+#
+#######################################################
+if loop_mode:
+    import time as _time
+
+    _TERMINAL_STATES = {'complete', 'centos ci failed'}
+    _all_rhel_done   = all(e['state'] in _TERMINAL_STATES
+                           for e in rhel_packages.values())
+    _all_fedora_done = all(e['state'] == 'complete'
+                           for e in fedora_packages.values())
+
+    if _all_rhel_done and _all_fedora_done:
+        print("\nAll releases complete — exiting loop.")
+    else:
+        _pending = [r for r, e in rhel_packages.items()
+                    if e['state'] not in _TERMINAL_STATES]
+        _pending += [r for r, e in fedora_packages.items()
+                     if e['state'] != 'complete']
+        print(f"\nLoop mode: {len(_pending)} release(s) still pending: "
+              f"{', '.join(_pending)}")
+        print(f"Sleeping {loop_interval}s then re-running…")
+        _time.sleep(loop_interval)
+        os.execv(sys.argv[0], sys.argv)
