@@ -73,7 +73,12 @@ def make_log(vr: str, name: str = '', email: str = '') -> str:
 
 
 def set_list_state(list_file: Path, release: str, new_state: str) -> None:
-    """Update the state (field 6) of a release line in rhel.list/fedora.list."""
+    """Update the state (field 6) of a release line in rhel.list/fedora.list.
+    Mirrors bash set_list_state(): warns and returns if file or release missing."""
+    if not list_file.exists():
+        print(f'WARNING: {release} not found in {list_file} (file missing — '
+              f'did plan.py run first?)', file=sys.stderr)
+        return
     text = list_file.read_text()
     pattern = rf'^({re.escape(release)}:[^:]*:[^:]*:[^:]*:[^:]*:)[^:]*(.*)'
     new_text, n = re.subn(pattern,
