@@ -24,6 +24,8 @@ import time
 from datetime import date
 from pathlib import Path
 
+from caupdate.tui import PipelineOutput
+
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -317,6 +319,7 @@ def build_current_releases() -> list[str]:
 def main():
     ap = argparse.ArgumentParser(description='Update ca-certificates dist-git trees')
     ap.add_argument('-q', action='store_true', help='Quiet (suppress git diff)')
+    ap.add_argument('--human', action='store_true', help='Rich TUI output')
     ap.add_argument('-d', action='store_true', help='Use NSS dev tip')
     ap.add_argument('-n', metavar='NSS_RELEASE', help='Specific NSS release')
     ap.add_argument('-t', metavar='NSS_TYPE', default='RTM',
@@ -329,6 +332,8 @@ def main():
     args = ap.parse_args()
 
     verbose = not args.q
+    out = PipelineOutput(human=args.human, title='build_combo.py')
+    out.set_columns(['Release', 'Major', 'State'])
 
     # categorise releases
     rhel8, rhel9, rhel10, fedora = [], [], [], []
@@ -519,10 +524,11 @@ def main():
     fedora_list_file = meta / 'fedora.list'
     nssckbi = cacerts / 'nssckbi.h'
 
-    def _update(releases, certdata_dir, pkg_dir_fn, rz, rb, list_file):
+    def _update(releases, certdata_dir, pkg_dir_fn, rz, rb, list_file, major):
         nonlocal errors
         for rel in releases:
-            print(f'**** ca-certificates {rel} ****')
+            out.log(f'**** ca-certificates {rel} ****')
+            out.update_row(rel, [rel, major, 'updating…'])
             rc = cacertificates_update(
                 pkg_dir_fn(rel),
                 certdata_dir / 'certdata.txt',
@@ -533,45 +539,54 @@ def main():
                 current_releases, verbose)
             errors += rc
             set_list_state(list_file, rel, 'staged')
+            out.update_row(rel, [rel, major, 'staged' if rc == 0 else 'error'])
 
-    _update(rhel8, modified / 'rhel8' / 'ca-certificates',
-            lambda r: packages / 'ca-certificates' / r, '80.0', '81',
-            rhel_list_file)
+    with out:
+        out.set_subtitle(f'NSS {nss_version} · CKBI {ckbi_version}')
 
-    for rel in rhel9:
-        print(f'**** ca-certificates {rel} ****')
-        if rel in current_releases:
-            pkg = packages / 'centos-fork' / 'ca-certificates' / 'c9s'
-        else:
-            pkg = packages / 'ca-certificates' / rel
-        rc = cacertificates_update(
-            pkg, modified / 'rhel9' / 'ca-certificates' / 'certdata.txt',
-            nssckbi, nss_version, ckbi_version,
-            scratch / rel.replace('/', '_'),
-            rel, '90.0', '91', current_releases, verbose)
-        errors += rc
-        set_list_state(rhel_list_file, rel, 'staged')
+        _update(rhel8, modified / 'rhel8' / 'ca-certificates',
+                lambda r: packages / 'ca-certificates' / r, '80.0', '81',
+                rhel_list_file, 'rhel-8')
 
-    for rel in rhel10:
-        print(f'**** ca-certificates {rel} ****')
-        if rel in current_releases:
-            pkg = packages / 'centos-fork' / 'ca-certificates' / 'c10s'
-        else:
-            pkg = packages / 'ca-certificates' / rel
-        rc = cacertificates_update(
-            pkg, modified / 'rhel10' / 'ca-certificates' / 'certdata.txt',
-            nssckbi, nss_version, ckbi_version,
-            scratch / rel.replace('/', '_'),
-            rel, '100.0', '101', current_releases, verbose)
-        errors += rc
-        set_list_state(rhel_list_file, rel, 'staged')
+        for rel in rhel9:
+            out.log(f'**** ca-certificates {rel} ****')
+            out.update_row(rel, [rel, 'rhel-9', 'updating…'])
+            if rel in current_releases:
+                pkg = packages / 'centos-fork' / 'ca-certificates' / 'c9s'
+            else:
+                pkg = packages / 'ca-certificates' / rel
+            rc = cacertificates_update(
+                pkg, modified / 'rhel9' / 'ca-certificates' / 'certdata.txt',
+                nssckbi, nss_version, ckbi_version,
+                scratch / rel.replace('/', '_'),
+                rel, '90.0', '91', current_releases, verbose)
+            errors += rc
+            set_list_state(rhel_list_file, rel, 'staged')
+            out.update_row(rel, [rel, 'rhel-9', 'staged' if rc == 0 else 'error'])
 
-    _update(fedora, modified / 'fedora' / 'ca-certificates',
-            lambda r: packages / 'fedora' / 'ca-certificates' / r, '1.0', '2',
-            fedora_list_file)
+        for rel in rhel10:
+            out.log(f'**** ca-certificates {rel} ****')
+            out.update_row(rel, [rel, 'rhel-10', 'updating…'])
+            if rel in current_releases:
+                pkg = packages / 'centos-fork' / 'ca-certificates' / 'c10s'
+            else:
+                pkg = packages / 'ca-certificates' / rel
+            rc = cacertificates_update(
+                pkg, modified / 'rhel10' / 'ca-certificates' / 'certdata.txt',
+                nssckbi, nss_version, ckbi_version,
+                scratch / rel.replace('/', '_'),
+                rel, '100.0', '101', current_releases, verbose)
+            errors += rc
+            set_list_state(rhel_list_file, rel, 'staged')
+            out.update_row(rel, [rel, 'rhel-10', 'staged' if rc == 0 else 'error'])
 
-    print(f'Finished updates for ca-certificates {ckbi_version} '
-          f'from NSS {nss_version} with {errors} errors')
+        _update(fedora, modified / 'fedora' / 'ca-certificates',
+                lambda r: packages / 'fedora' / 'ca-certificates' / r, '1.0', '2',
+                fedora_list_file, 'fedora')
+
+        out.log(f'Finished updates for ca-certificates {ckbi_version} '
+                f'from NSS {nss_version} with {errors} errors')
+
     os.chdir(SCRIPT_LOC)
     print('The following directories are ready for checkin:')
     for checkin in packages.rglob('checkin.log'):

@@ -34,6 +34,7 @@ import re
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
+from caupdate.tui import PipelineOutput
 from caupdate.release import (
     release_get_major, safe_int,
     get_need_zstream_clone,
@@ -798,7 +799,7 @@ def build(release,package):
 #
 #######################################################
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run","loop","interval="])
+    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run","loop","interval=","human"])
 except getopt.GetoptError as err:
     print(err)
     print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-j jiraaurlbase]')
@@ -806,6 +807,7 @@ except getopt.GetoptError as err:
 
 resync=False
 get_ga=False
+human=False
 loop_mode=False
 loop_interval=300   # seconds between passes in loop mode (default 5 min)
 try:
@@ -897,6 +899,8 @@ for opt, arg in opts:
         loop_mode = True
     elif opt == '--interval':
         loop_interval = int(arg)
+    elif opt == '--human':
+        human = True
     elif opt == '--getconfig' :
         if not arg in config:
             print("No arg found");
@@ -938,6 +942,7 @@ if not os.path.exists(firefox_info) :
 
 rhel_packages = {}
 fedora_packages = {}
+_out = PipelineOutput(human=human, title='process.py')
 
 #######################################################
 #
@@ -1236,32 +1241,38 @@ f.close()
 # print out in our current status
 #
 #######################################################
-print("Current Status:")
-distro='rhel'
-for release in rhel_packages :
-    entry = rhel_packages[release]
-    bugnumber=entry['bugnumber']
-    erratanumber=entry['erratanumber']
-    packages=entry['packages']
-    print("%s: state='%s' bug=%s errata=%d"%(release,entry['state'],bugnumber,erratanumber))
-    if bugnumber != "0":
-        print("    %s/show_bug.cgi?id=%s"%(jira_url_base,bugnumber))
-    if erratanumber != 0:
-        print("    %s/advisory/%d"%(errata_url_base,erratanumber))
-    for package in packages.split(',') :
-        (task, nvr, state) = build_get_info(release, package)
-        if (task != '') :
-            print("    %s/taskinfo?taskID=%s (%s,%s)"%(brew_url_base,task,nvr,state))
+_out.set_columns(['Release', 'Bug', 'Errata', 'NVR', 'State'])
+with _out:
+    _out.log('Current Status:')
+    distro='rhel'
+    for release in rhel_packages :
+        entry = rhel_packages[release]
+        bugnumber=entry['bugnumber']
+        erratanumber=entry['erratanumber']
+        packages=entry['packages']
+        nvr=entry['nvr']
+        state=entry['state']
+        errata_str = str(erratanumber) if erratanumber != 0 else '–'
+        _out.update_row(release, [release, bugnumber, errata_str, nvr or '–', state])
+        _out.log("%s: state='%s' bug=%s errata=%d"%(release,state,bugnumber,erratanumber))
+        if bugnumber != "0":
+            _out.log("    %s/show_bug.cgi?id=%s"%(jira_url_base,bugnumber))
+        if erratanumber != 0:
+            _out.log("    %s/advisory/%d"%(errata_url_base,erratanumber))
+        for package in packages.split(',') :
+            (task, nvr_b, state_b) = build_get_info(release, package)
+            if (task != '') :
+                _out.log("    %s/taskinfo?taskID=%s (%s,%s)"%(brew_url_base,task,nvr_b,state_b))
 
-distro='fedora'
-for release in fedora_packages :
-    entry = fedora_packages[release]
-    packages=entry['packages']
-    print("%s: state='%s'"%(release,entry['state']))
-    for package in packages.split(',') :
-        (task, nvr, state) = build_get_info(release, package)
-        if (task != '') :
-            print("    %s/taskinfo?taskID=%s (%s,%s)"%(koji_url_base,task,nvr,state))
+    distro='fedora'
+    for release in fedora_packages :
+        entry = fedora_packages[release]
+        packages=entry['packages']
+        _out.log("%s: state='%s'"%(release,entry['state']))
+        for package in packages.split(',') :
+            (task, nvr_b, state_b) = build_get_info(release, package)
+            if (task != '') :
+                _out.log("    %s/taskinfo?taskID=%s (%s,%s)"%(koji_url_base,task,nvr_b,state_b))
 
 #######################################################
 #

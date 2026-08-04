@@ -36,6 +36,7 @@ from caupdate.release import (
     discover_rhel_releases, discover_fedora_releases,
     load_errata_map, CA_CERTS_FILE,
 )
+from caupdate.tui import PipelineOutput
 from caupdate.issues import (
     issue_create, issue_lookup, issue_request_clone, has_clone_links,
     make_jira_client, jira_fixversion, bug_summary_short,
@@ -314,13 +315,17 @@ try:
     opts, _ = getopt.getopt(
         sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora',
                                         'crypto-epic-parent=',
-                                        'dev-sprint=', 'qe-sprint='])
+                                        'dev-sprint=', 'qe-sprint=',
+                                        'human', 'loop', 'interval='])
 except getopt.GetoptError as err:
     print(err)
     print('Usage: plan.py -f <firefox> [-n <nss_version>] [-s <mcs_version>] [--rhel | --fedora] [--dry-run] [--resync]')
     sys.exit(2)
 
 mode            = None   # 'rhel' or 'fedora'
+human           = False
+loop_mode       = False
+loop_interval   = 300
 resync          = False
 firefox_version = None
 version         = None
@@ -376,8 +381,11 @@ for opt, arg in opts:
     elif opt == '--crypto-epic-parent':  crypto_epic_parent = arg
     elif opt == '--dev-sprint':          dev_sprint = arg
     elif opt == '--qe-sprint':           qe_sprint  = arg
-    elif opt == '--rhel':    mode = 'rhel'
-    elif opt == '--fedora':  mode = 'fedora'
+    elif opt == '--rhel':      mode = 'rhel'
+    elif opt == '--fedora':    mode = 'fedora'
+    elif opt == '--human':     human = True
+    elif opt == '--loop':      loop_mode = True
+    elif opt == '--interval':  loop_interval = int(arg)
 
 if mode is None:
     print('Specify a mode: --rhel or --fedora')
@@ -456,92 +464,118 @@ else:
 rhel_entries   = []
 fedora_entries = []
 
-print(f'\n=== Planning releases (mode={mode}) ===\n')
+subtitle = f'NSS {nss_ver} · CKBI {ver} · Firefox {firefox_version}'
+out = PipelineOutput(human=human, title=f'plan.py --{mode}')
+out.set_subtitle(subtitle)
 
 if mode == 'rhel':
-    discovered = discover_rhel_releases(errata_map, ga_list)
-    if not discovered:
-        print('WARNING: no active RHEL releases found in errata map')
-    for item in discovered:
-        release         = item['release']
-        is_ga           = item['is_ga']
-        use_zstream     = item['use_zstream']
-        is_sustaining   = item['is_sustaining']
-        if is_ga and not use_zstream:
-            label = 'GA'
-        elif is_ga and use_zstream:
-            label = 'GA (z-stream-only major)'
-        else:
-            label = 'z-stream'
-        if is_sustaining:
-            label += ' [SE]'
-        print(f'{release}: {label}')
-        bugnumber = _handle_rhel(release, is_ga, use_zstream, is_sustaining)
-        print(f'  bug={bugnumber}')
-        if is_sustaining:
-            # SE releases: no CRYPTO epic — set SE contact as QA on the RHEL bug
-            _set_rhel_qa_contact(bugnumber)
-            crypto_key = ''
-        else:
-            crypto_key = _maybe_create_crypto_epic(release, bugnumber,
-                             is_zstream=not is_ga) or ''
-
-        # Merge with existing rhel.list entry, preserving pipeline progress
-        if release in existing_rhel:
-            prev = existing_rhel[release]
-            # Only update bugnumber and crypto if newly obtained
-            merged_bug    = bugnumber if bugnumber != '0' else prev[2]
-            merged_errata = prev[3]
-            merged_nvr    = prev[4]
-            merged_state  = prev[5]
-            merged_glmr   = prev[6]
-            merged_glup   = prev[7]
-            merged_crypto = crypto_key or (prev[8] if len(prev) > 8 else '')
-        else:
-            merged_bug, merged_errata = bugnumber, '0'
-            merged_nvr, merged_state  = '', 'planned'
-            merged_glmr, merged_glup  = '', ''
-            merged_crypto             = crypto_key
-
-        rhel_entries.append((release, packages, merged_bug, merged_errata,
-                             merged_nvr, merged_state, merged_glmr,
-                             merged_glup, merged_crypto))
-
+    out.set_columns(['Release', 'Type', 'Bug', 'CRYPTO', 'State'])
 elif mode == 'fedora':
-    try:
-        discovered = discover_fedora_releases()
-    except Exception as e:
-        if DRY_RUN:
-            print(f'WARNING: Bodhi query failed ({e}); discovery will be empty')
-            discovered = []
-        else:
-            raise
-    if not discovered:
-        print('WARNING: no active Fedora releases found via Bodhi')
-    for release in discovered:
-        print(f'{release}: fedora')
-        fedora_entries.append((release, packages, '0', '0', '', 'planned'))
+    out.set_columns(['Release', 'State'])
 
-# ── write meta files ──────────────────────────────────────────────────────────
+with out:
+    out.log(f'Planning releases (mode={mode})  {subtitle}')
 
-if not DRY_RUN:
-    with open(rhel_list, 'w') as f:
-        for entry in rhel_entries:
-            f.write(':'.join(entry) + '\n')
-    with open(fedora_list, 'w') as f:
-        for entry in fedora_entries:
-            f.write(':'.join(entry) + '\n')
+    if mode == 'rhel':
+        discovered = discover_rhel_releases(errata_map, ga_list)
+        if not discovered:
+            out.log('WARNING: no active RHEL releases found in errata map')
+        for item in discovered:
+            release         = item['release']
+            is_ga           = item['is_ga']
+            use_zstream     = item['use_zstream']
+            is_sustaining   = item['is_sustaining']
+            if is_ga and not use_zstream:
+                label = 'GA'
+            elif is_ga and use_zstream:
+                label = 'GA (z-stream)'
+            else:
+                label = 'z-stream'
+            if is_sustaining:
+                label += ' SE'
 
-# ── summary ───────────────────────────────────────────────────────────────────
+            out.update_row(release, [release, label, '…', '…', 'working'])
+            out.log(f'{release}: {label}')
 
-print('\n=== Summary ===\n')
-print(f'{"Release":<25} {"Bug":<15} {"CRYPTO":<15} {"State"}')
-print('-' * 62)
-for entry in rhel_entries:
-    crypto = crypto_map.get(entry[0], '')
-    print(f'{entry[0]:<25} {entry[2]:<15} {crypto:<15} {entry[5]}')
-for entry in fedora_entries:
-    print(f'{entry[0]:<25} {"(none)":<15} {"":15} {entry[5]}')
+            bugnumber = _handle_rhel(release, is_ga, use_zstream, is_sustaining)
+            out.log(f'  bug={bugnumber}')
 
-if DRY_RUN:
-    print('\n(dry run — no changes written)')
+            if is_sustaining:
+                _set_rhel_qa_contact(bugnumber)
+                crypto_key = ''
+            else:
+                crypto_key = _maybe_create_crypto_epic(release, bugnumber,
+                                 is_zstream=not is_ga) or ''
+
+            if release in existing_rhel:
+                prev = existing_rhel[release]
+                merged_bug    = bugnumber if bugnumber != '0' else prev[2]
+                merged_errata = prev[3]
+                merged_nvr    = prev[4]
+                merged_state  = prev[5]
+                merged_glmr   = prev[6]
+                merged_glup   = prev[7]
+                merged_crypto = crypto_key or (prev[8] if len(prev) > 8 else '')
+            else:
+                merged_bug, merged_errata = bugnumber, '0'
+                merged_nvr, merged_state  = '', 'planned'
+                merged_glmr, merged_glup  = '', ''
+                merged_crypto             = crypto_key
+
+            rhel_entries.append((release, packages, merged_bug, merged_errata,
+                                 merged_nvr, merged_state, merged_glmr,
+                                 merged_glup, merged_crypto))
+            out.update_row(release, [release, label, merged_bug,
+                                     merged_crypto or '–', merged_state])
+
+    elif mode == 'fedora':
+        try:
+            discovered = discover_fedora_releases()
+        except Exception as e:
+            if DRY_RUN:
+                out.log(f'WARNING: Bodhi query failed ({e}); discovery empty')
+                discovered = []
+            else:
+                raise
+        if not discovered:
+            out.log('WARNING: no active Fedora releases found via Bodhi')
+        for release in discovered:
+            out.log(f'{release}: fedora')
+            fedora_entries.append((release, packages, '0', '0', '', 'planned'))
+            out.update_row(release, [release, 'planned'])
+
+    # ── write meta files ──────────────────────────────────────────────────────
+
+    if not DRY_RUN:
+        with open(rhel_list, 'w') as f:
+            for entry in rhel_entries:
+                f.write(':'.join(entry) + '\n')
+        with open(fedora_list, 'w') as f:
+            for entry in fedora_entries:
+                f.write(':'.join(entry) + '\n')
+
+    if DRY_RUN:
+        out.log('(dry run — no changes written)')
+
+# ── loop mode ─────────────────────────────────────────────────────────────────
+
+if loop_mode:
+    import time as _time
+    _all_done = (
+        all(e[5] == 'planned' for e in rhel_entries)   # plan.py only reaches 'planned'
+        or not rhel_entries
+    ) and (
+        all(e[5] == 'planned' for e in fedora_entries)
+        or not fedora_entries
+    )
+    # For plan.py, loop is useful to retry releases that didn't get bugs yet
+    # (z-stream clones pending). Check if any bug is still '0'.
+    _missing = [e[0] for e in rhel_entries if e[2] == '0']
+    if _missing:
+        print(f'\nLoop mode: {len(_missing)} release(s) without bugs yet: '
+              f'{", ".join(_missing)}')
+        print(f'Sleeping {loop_interval}s then re-running…')
+        _time.sleep(loop_interval)
+        os.execv(sys.argv[0], sys.argv)
+    else:
+        print('\nAll releases have bugs — loop complete.')
