@@ -37,16 +37,13 @@ from jira import JIRAError
 from caupdate.tui import PipelineOutput
 from caupdate.release import (
     release_get_major, safe_int,
-    get_need_zstream_clone,
     release_is_centos_stream,
     errata_get_release_info,
     load_errata_map, CA_CERTS_FILE,
 )
 from caupdate.issues import (
-    issue_create, issue_lookup, issue_request_clone,
     issue_get_state, issue_change_state, issue_get,
     make_jira_client,
-    JIRA_PROJ, JIRA_ISSUE_TYPE,
     bug_summary_short, bug_summary, bug_description,
 )
 
@@ -109,9 +106,6 @@ def get_build_packages_dir(distro,package,release) :
         return packages_dir[distro]+"%s/rhel%s-main"%(package,major)
     return packages_dir[distro]+"%s/%s"%(package,release)
 # Release helpers and errata-map functions are in caupdate.release.
-def _get_need_zstream_clone(release):
-    return get_need_zstream_clone(release, ga_list)
-
 def _release_is_centos_stream(release):
     return release_is_centos_stream(release, ga_list)
 
@@ -164,16 +158,6 @@ topic_base="An update for %s %s now available for %s."
 checkin_log="checkin.log"
 
 # Wrappers for issue functions to inject the year global.
-def _issue_create(release, version, nss_version, firefox_version, mcs_version, packages, zstream):
-    return issue_create(Jira, release, version, nss_version, firefox_version,
-                        mcs_version, packages, zstream, year)
-
-def _issue_lookup(release, version, packages, zstream=False):
-    return issue_lookup(Jira, release, version, packages, year, zstream)
-
-def _issue_request_clone(issue):
-    return issue_request_clone(Jira, issue)
-
 def _issue_get(bugnumber):
     return issue_get(Jira, bugnumber)
 
@@ -1001,31 +985,11 @@ for release in rhel_packages:
 
     print("  * handling bugs")
     if bugnumber == "0" :
-        # we need bug numbers so that we can commit our changes
-        if _get_need_zstream_clone(release) :
-            # lookup cloned bug number
-            bugnumber,issue=_issue_lookup(release,version,packages,zstream=True)
-            if bugnumber == "0" :
-                print("    * waiting for clone")
-                entry['state']='waiting bug clone'
-                continue
-            entry['bugnumber']=bugnumber
-        else :
-            # first lookup the bug to see if it has already been created
-            bugnumber,issue=_issue_lookup(release,version,packages)
-            if bugnumber == "0":
-                # nope, create it now
-                bugnumber,issue=_issue_create(release,version,nss_version,firefox_version,mcs_version,packages, False)
-
-                if bugnumber == "0":
-                    entry['state']='need bug'
-                    continue
-
-                # Request clone right away
-                if safe_int(release_get_major(release)) > 8:
-                    _issue_request_clone(issue)
-
-            entry['bugnumber']=bugnumber
+        # Bug creation is plan.py's sole responsibility.
+        # If there is no bug number yet, wait for plan.py to run.
+        print("    * no bug number — run plan.py first")
+        entry['state']='need bug'
+        continue
     print("      * bug=%s"%bugnumber)
     if issue == None :
         issue = _issue_get(bugnumber)
