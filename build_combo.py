@@ -493,21 +493,20 @@ def main():
         os.makedirs('centos', exist_ok=True)
         _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates'],
              cwd=packages / 'centos')
-        # Move branch worktrees from packages/centos/ca-certificates/<branch> → packages/centos/<branch>
+        # Get upstream URL from the centos git repo root (before moving worktrees)
         centos_ca_git = packages / 'centos' / 'ca-certificates'
+        r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
+                           capture_output=True, text=True,
+                           cwd=centos_ca_git)
+        ca_upstream = r.stdout.strip()
+
+        # Move branch worktrees from packages/centos/ca-certificates/<branch> → packages/centos/<branch>
         for ver in centos_list:
             branch = f'c{ver}s'
             if (centos_ca_git / branch).is_dir():
                 _run(['git', 'worktree', 'move', branch,
                       str(packages / 'centos' / branch)],
                      cwd=centos_ca_git)
-
-        # get upstream URL from the first available centos branch
-        first_branch = f'c{centos_list[0]}s'
-        r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
-                           capture_output=True, text=True,
-                           cwd=packages / 'centos' / first_branch)
-        ca_upstream = r.stdout.strip()
 
         fork_base = packages / 'centos-fork'
         for version in centos_list:
