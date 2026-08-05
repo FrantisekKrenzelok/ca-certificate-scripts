@@ -502,10 +502,11 @@ def main():
                       str(packages / 'centos' / branch)],
                      cwd=centos_ca_git)
 
-        # get upstream URL from c8s (now at packages/centos/c8s after move)
+        # get upstream URL from the first available centos branch
+        first_branch = f'c{centos_list[0]}s'
         r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
                            capture_output=True, text=True,
-                           cwd=packages / 'centos' / 'c8s')
+                           cwd=packages / 'centos' / first_branch)
         ca_upstream = r.stdout.strip()
 
         fork_base = packages / 'centos-fork'
