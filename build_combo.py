@@ -421,7 +421,6 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
         shutil.rmtree(d, ignore_errors=True)
     meta.mkdir(exist_ok=True)
     packages.mkdir()
-    (packages / 'rhel').mkdir()
     cacerts.mkdir()
 
     centos_list = []
@@ -440,9 +439,6 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
     if fedora:
         (modified / 'fedora').mkdir(parents=True)
         (packages / 'fedora').mkdir()
-    if centos_list:
-        (packages / 'centos').mkdir()
-        (packages / 'centos-fork').mkdir(parents=True)
 
     # ── fetch sources ─────────────────────────────────────────────────────────
     print('*' * 66)
@@ -511,37 +507,71 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
 
     if rhel_cacerts:
         print('>> fetching rhel ca-certificates')
-        _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates', 'rhel'],
-             cwd=packages)
+        _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates', 'rhel'])
 
-        print('>> fetching centos ca-certificates')
-        _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates', 'centos'],
-             cwd=packages)
-        # Get upstream URL from the centos git repo root (before moving worktrees)
-        r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
-                           capture_output=True, text=True,
-                           cwd=packages / 'centos')
-        ca_upstream = r.stdout.strip()
-
-        fork_base = packages / 'centos-fork'
-        for version in centos_list:
-            branch = f'c{version}s'
-            print(f'Cloning {branch} from {centos_fork}')
-            _run(['git', 'clone',
-                  '-c', 'url.git@gitlab.com:.insteadOf=https://gitlab.com/',
-                  centos_fork, '-b', branch, branch],
-                 cwd=fork_base)
-            branch_dir = fork_base / branch
-            if not branch_dir.is_dir():
-                print(f'Folder {branch} not found')
+        # ── create remote z-stream branches from major-main ───────────────────
+        # For z-stream releases on CentOS Stream majors, ensure the branch
+        # exists at origin, creating it from major-main if needed, then add
+        # a local worktree so the release dir exists alongside the others.
+        rhel_git = packages / 'rhel'
+        for rel in rhel9 + rhel10:
+            major = safe_int(release_get_major(rel))
+            if not uses_centos_stream(major):
                 continue
-            _run(['git', 'remote', 'add', 'upstream', ca_upstream], cwd=branch_dir)
-            _run(['git', 'fetch', 'upstream'], cwd=branch_dir)
-            _run(['git', 'pull', 'upstream', branch], cwd=branch_dir)
-            _run(['git', 'push', 'origin', branch], cwd=branch_dir)
-            _run(['git', 'checkout', '-b', branch, f'origin/{branch}'],
-                 cwd=branch_dir)
-            _run(['git', 'branch', '-u', f'upstream/{branch}'], cwd=branch_dir)
+
+            main_branch = f'rhel{major}-main'
+            worktree_path = rhel_git / rel
+
+            if worktree_path.is_dir():
+                continue
+
+            # Check if branch exists at origin
+            r = subprocess.run(
+                ['git', 'ls-remote', '--heads', 'origin', rel],
+                capture_output=True, text=True, cwd=rhel_git)
+            branch_exists = bool(r.stdout.strip())
+
+            if not branch_exists:
+                print(f'>> creating remote branch {rel} from {main_branch}')
+                _run(['git', 'push', 'origin',
+                      f'refs/heads/{main_branch}:refs/heads/{rel}'],
+                     cwd=rhel_git)
+
+            # Fetch and add local worktree
+            _run(['git', 'fetch', 'origin', rel], cwd=rhel_git)
+            _run(['git', 'worktree', 'add', str(worktree_path), rel],
+                 cwd=rhel_git)
+            out.log(f'  {rel}: worktree ready at packages/rhel/{rel}')
+
+        if centos_list:
+            print('>> fetching centos ca-certificates')
+            _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates', 'centos'])
+            # Get upstream URL from the centos git repo root (before moving worktrees)
+            r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
+                               capture_output=True, text=True,
+                               cwd=packages / 'centos')
+            ca_upstream = r.stdout.strip()
+
+            fork_base = packages / 'centos-fork'
+            fork_base.mkdir(parents=True)
+            for version in centos_list:
+                branch = f'c{version}s'
+                print(f'Cloning {branch} from {centos_fork}')
+                _run(['git', 'clone',
+                      '-c', 'url.git@gitlab.com:.insteadOf=https://gitlab.com/',
+                      centos_fork, '-b', branch, branch],
+                     cwd=fork_base)
+                branch_dir = fork_base / branch
+                if not branch_dir.is_dir():
+                    print(f'Folder {branch} not found')
+                    continue
+                _run(['git', 'remote', 'add', 'upstream', ca_upstream], cwd=branch_dir)
+                _run(['git', 'fetch', 'upstream'], cwd=branch_dir)
+                _run(['git', 'pull', 'upstream', branch], cwd=branch_dir)
+                _run(['git', 'push', 'origin', branch], cwd=branch_dir)
+                _run(['git', 'checkout', '-b', branch, f'origin/{branch}'],
+                     cwd=branch_dir)
+                _run(['git', 'branch', '-u', f'upstream/{branch}'], cwd=branch_dir)
 
     if fedora_cacerts:
         print('>> fetching fedora ca-certificates')
