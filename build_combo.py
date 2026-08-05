@@ -25,6 +25,7 @@ from datetime import date
 from pathlib import Path
 
 from caupdate.tui import PipelineOutput
+from caupdate.release_config import uses_centos_stream
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -396,13 +397,16 @@ def main():
     centos_list = []
     if rhel8:
         (modified / 'rhel8').mkdir(parents=True)
-        centos_list.append('8')
+        if uses_centos_stream(8):
+            centos_list.append('8')
     if rhel9:
         (modified / 'rhel9').mkdir(parents=True)
-        centos_list.append('9')
+        if uses_centos_stream(9):
+            centos_list.append('9')
     if rhel10:
         (modified / 'rhel10').mkdir(parents=True)
-        centos_list.append('10')
+        if uses_centos_stream(10):
+            centos_list.append('10')
     if fedora:
         (modified / 'fedora').mkdir(parents=True)
         (packages / 'fedora').mkdir()
@@ -594,7 +598,7 @@ def main():
         for rel in rhel9:
             out.log(f'**** ca-certificates {rel} ****')
             out.update_row(rel, [rel, 'rhel-9', 'updating…'])
-            if rel in current_releases:
+            if uses_centos_stream(9) and rel in current_releases:
                 pkg = packages / 'centos-fork' / 'c9s'
             else:
                 pkg = packages / 'rhel' / rel
@@ -610,7 +614,7 @@ def main():
         for rel in rhel10:
             out.log(f'**** ca-certificates {rel} ****')
             out.update_row(rel, [rel, 'rhel-10', 'updating…'])
-            if rel in current_releases:
+            if uses_centos_stream(10) and rel in current_releases:
                 pkg = packages / 'centos-fork' / 'c10s'
             else:
                 pkg = packages / 'rhel' / rel

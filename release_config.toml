@@ -1,0 +1,11 @@
+# Per-RHEL-major release configuration.
+# Add a new [<major>] section for each new major RHEL release.
+
+[8]
+centos_stream = false   # RHEL 8 ships directly via Brew, no CentOS Stream gate
+
+[9]
+centos_stream = true    # RHEL 9 GA goes through CentOS Stream (c9s fork)
+
+[10]
+centos_stream = true    # RHEL 10 GA goes through CentOS Stream (c10s fork)

@@ -35,6 +35,7 @@ import re
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
 from caupdate.tui import PipelineOutput
+from caupdate.release_config import uses_centos_stream
 from caupdate.release import (
     release_get_major, safe_int,
     release_is_centos_stream,
@@ -107,6 +108,9 @@ def get_build_packages_dir(distro,package,release) :
     return packages_dir[distro]+release
 # Release helpers and errata-map functions are in caupdate.release.
 def _release_is_centos_stream(release):
+    major = safe_int(release_get_major(release))
+    if not uses_centos_stream(major):
+        return False
     return release_is_centos_stream(release, ga_list)
 
 
