@@ -28,7 +28,6 @@ import sys
 import textwrap
 import subprocess
 import getopt
-import warnings
 import asn1
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -81,9 +80,7 @@ def printable_serial(obj):
 def getSerial(cert):
     encoder = asn1.Encoder()
     encoder.start()
-    # Some legacy certs have negative serials (RFC 5280 violation); abs() for
-    # encoding purposes — the raw DER bytes are what actually matter for trust.
-    encoder.write(abs(cert.serial_number))
+    encoder.write(cert.serial_number)
     return encoder.output()
 
 def dumpOctal(f,value):
@@ -279,10 +276,7 @@ if len(list(obj.items())) > 0:
 if verifyDate :
     for obj in objects:
         if obj['CKA_CLASS'] == 'CKO_CERTIFICATE' :
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=UserWarning,
-                                        message='.*negative serial number.*')
-                cert = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
+            cert = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
             if (cert.not_valid_after_utc <= date) :
                 trust_obj = getTrust(objects,obj['CKA_SERIAL_NUMBER'],obj['CKA_ISSUER'])
                 # we don't remove distrusted expired certificates
@@ -297,10 +291,7 @@ if verifyDate :
 # now merge the results
 for certval in pemcerts:
     certder = base64.b64decode(certval)
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=UserWarning,
-                                message='.*negative serial number.*')
-        cert = x509.load_der_x509_certificate(certder)
+    cert = x509.load_der_x509_certificate(certder)
     try:
         label=cert.subject.get_attributes_for_oid(x509.oid.NameOID.COMMON_NAME)[0].value
     except:
@@ -349,10 +340,7 @@ for certval in pemcerts:
         if obj['CKA_SUBJECT'] != cert.subject.public_bytes():
             continue
         # do they have the same public key?
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore', category=UserWarning,
-                                    message='.*negative serial number.*')
-            cert2 = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
+        cert2 = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
         if cert2.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo) != cert.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo) :
             continue
         #found now update trust record
@@ -375,11 +363,10 @@ for certval in pemcerts:
     comment +=  '# Issuer: ' + cert.issuer.rfc4514_string() + '\n'
     comment +=  '# Serial Number:'
     sn=cert.serial_number
-    if abs(sn) < 0x100000:
+    if sn < 0x100000:
         comment +=  ' %d (0x%x)\n'%(sn,sn)
     else:
-        sn_abs = abs(sn)
-        comment +=  formatHex(sn_abs.to_bytes((sn_abs.bit_length()+7)//8,"big")) + '\n'
+        comment +=  formatHex(sn.to_bytes((sn.bit_length()+7)//8,"big")) + '\n'
     comment +=  '# Subject: ' + cert.subject.rfc4514_string() + '\n'
     comment +=  '# Not Valid Before: ' + cert.not_valid_before_utc.strftime(time) + '\n'
     comment +=  '# Not Valid After: ' + cert.not_valid_after_utc.strftime(time) + '\n'
