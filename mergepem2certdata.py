@@ -369,7 +369,7 @@ for certval in pemcerts:
         comment +=  formatHex(sn.to_bytes((sn.bit_length()+7)//8,"big")) + '\n'
     comment +=  '# Subject: ' + cert.subject.rfc4514_string() + '\n'
     comment +=  '# Not Valid Before: ' + cert.not_valid_before_utc.strftime(time) + '\n'
-    comment +=  '# Not Valid After: ' + cert.not_valid_after_utc_utc.strftime(time) + '\n'
+    comment +=  '# Not Valid After: ' + cert.not_valid_after_utc.strftime(time) + '\n'
     comment +=  '# Fingerprint (MD5): ' + formatHex(certhashmd5) + '\n'
     comment +=  '# Fingerprint (SHA1): ' + formatHex(certhashsha1) + '\n'
     obj['Comment']= comment%"Certificate"
