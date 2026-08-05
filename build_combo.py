@@ -394,20 +394,20 @@ def main():
 
     centos_list = []
     if rhel8:
-        (modified / 'rhel8' / 'ca-certificates').mkdir(parents=True)
+        (modified / 'rhel8').mkdir(parents=True)
         centos_list.append('8')
     if rhel9:
-        (modified / 'rhel9' / 'ca-certificates').mkdir(parents=True)
+        (modified / 'rhel9').mkdir(parents=True)
         centos_list.append('9')
     if rhel10:
-        (modified / 'rhel10' / 'ca-certificates').mkdir(parents=True)
+        (modified / 'rhel10').mkdir(parents=True)
         centos_list.append('10')
     if fedora:
-        (modified / 'fedora' / 'ca-certificates').mkdir(parents=True)
+        (modified / 'fedora').mkdir(parents=True)
         (packages / 'fedora').mkdir()
     if centos_list:
         (packages / 'centos').mkdir()
-        (packages / 'centos-fork' / 'ca-certificates').mkdir(parents=True)
+        (packages / 'centos-fork').mkdir(parents=True)
 
     # ── fetch sources ─────────────────────────────────────────────────────────
     print('*' * 66)
@@ -477,18 +477,33 @@ def main():
     if rhel_cacerts:
         print('>> fetching rhel ca-certificates')
         _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates'])
+        # Move branch worktrees from packages/ca-certificates/<rel> → packages/<rel>
+        rhel_ca_git = packages / 'ca-certificates'
+        for rel in rhel8 + rhel9 + rhel10:
+            if (rhel_ca_git / rel).is_dir():
+                _run(['git', 'worktree', 'move', rel, str(packages / rel)],
+                     cwd=rhel_ca_git)
+
         print('>> fetching centos ca-certificates')
         os.makedirs('centos', exist_ok=True)
         _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates'],
              cwd=packages / 'centos')
+        # Move branch worktrees from packages/centos/ca-certificates/<branch> → packages/centos/<branch>
+        centos_ca_git = packages / 'centos' / 'ca-certificates'
+        for ver in centos_list:
+            branch = f'c{ver}s'
+            if (centos_ca_git / branch).is_dir():
+                _run(['git', 'worktree', 'move', branch,
+                      str(packages / 'centos' / branch)],
+                     cwd=centos_ca_git)
 
-        # get upstream URL from c8s
+        # get upstream URL from c8s (now at packages/centos/c8s after move)
         r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
                            capture_output=True, text=True,
-                           cwd=packages / 'centos' / 'ca-certificates' / 'c8s')
+                           cwd=packages / 'centos' / 'c8s')
         ca_upstream = r.stdout.strip()
 
-        fork_base = packages / 'centos-fork' / 'ca-certificates'
+        fork_base = packages / 'centos-fork'
         for version in centos_list:
             branch = f'c{version}s'
             print(f'Cloning {branch} from {centos_fork}')
@@ -512,6 +527,13 @@ def main():
         print('>> fetching fedora ca-certificates')
         _run(['fedpkg', '-q', 'clone', '-B', 'ca-certificates'],
              cwd=packages / 'fedora')
+        # Move worktrees from packages/fedora/ca-certificates/<rel> → packages/fedora/<rel>
+        fedora_ca_git = packages / 'fedora' / 'ca-certificates'
+        for rel in fedora:
+            src = fedora_ca_git / rel
+            if src.is_dir():
+                _run(['git', 'worktree', 'move', rel, str(packages / 'fedora' / rel)],
+                     cwd=fedora_ca_git)
 
     # ── modify certdata ───────────────────────────────────────────────────────
     os.chdir(SCRIPT_LOC)
@@ -522,10 +544,10 @@ def main():
     print('*' + ' Modifying certdata.txt for releases '.center(64) + '*')
     print('*' * 66)
 
-    for maj, dest in [('fedora', modified / 'fedora' / 'ca-certificates'),
-                      ('rhel10', modified / 'rhel10' / 'ca-certificates'),
-                      ('rhel9',  modified / 'rhel9'  / 'ca-certificates'),
-                      ('rhel8',  modified / 'rhel8'  / 'ca-certificates')]:
+    for maj, dest in [('fedora', modified / 'fedora'),
+                      ('rhel10', modified / 'rhel10'),
+                      ('rhel9',  modified / 'rhel9'),
+                      ('rhel8',  modified / 'rhel8')]:
         rel_list = {'fedora': fedora, 'rhel10': rhel10,
                     'rhel9': rhel9, 'rhel8': rhel8}[maj]
         if rel_list:
@@ -544,14 +566,14 @@ def main():
     fedora_list_file = meta / 'fedora.list'
     nssckbi = cacerts / 'nssckbi.h'
 
-    def _update(releases, certdata_dir, pkg_dir_fn, rz, rb, list_file, major):
+    def _update(releases, certdata_file, pkg_dir_fn, rz, rb, list_file, major):
         nonlocal errors
         for rel in releases:
             out.log(f'**** ca-certificates {rel} ****')
             out.update_row(rel, [rel, major, 'updating…'])
             rc = cacertificates_update(
                 pkg_dir_fn(rel),
-                certdata_dir / 'certdata.txt',
+                certdata_file,
                 nssckbi,
                 nss_version, ckbi_version,
                 scratch / rel.replace('/', '_'),
@@ -564,19 +586,19 @@ def main():
     with out:
         out.set_subtitle(f'NSS {nss_version} · CKBI {ckbi_version}')
 
-        _update(rhel8, modified / 'rhel8' / 'ca-certificates',
-                lambda r: packages / 'ca-certificates' / r, '80.0', '81',
+        _update(rhel8, modified / 'rhel8' / 'certdata.txt',
+                lambda r: packages / r, '80.0', '81',
                 rhel_list_file, 'rhel-8')
 
         for rel in rhel9:
             out.log(f'**** ca-certificates {rel} ****')
             out.update_row(rel, [rel, 'rhel-9', 'updating…'])
             if rel in current_releases:
-                pkg = packages / 'centos-fork' / 'ca-certificates' / 'c9s'
+                pkg = packages / 'centos-fork' / 'c9s'
             else:
-                pkg = packages / 'ca-certificates' / rel
+                pkg = packages / rel
             rc = cacertificates_update(
-                pkg, modified / 'rhel9' / 'ca-certificates' / 'certdata.txt',
+                pkg, modified / 'rhel9' / 'certdata.txt',
                 nssckbi, nss_version, ckbi_version,
                 scratch / rel.replace('/', '_'),
                 rel, '90.0', '91', current_releases, verbose)
@@ -588,11 +610,11 @@ def main():
             out.log(f'**** ca-certificates {rel} ****')
             out.update_row(rel, [rel, 'rhel-10', 'updating…'])
             if rel in current_releases:
-                pkg = packages / 'centos-fork' / 'ca-certificates' / 'c10s'
+                pkg = packages / 'centos-fork' / 'c10s'
             else:
-                pkg = packages / 'ca-certificates' / rel
+                pkg = packages / rel
             rc = cacertificates_update(
-                pkg, modified / 'rhel10' / 'ca-certificates' / 'certdata.txt',
+                pkg, modified / 'rhel10' / 'certdata.txt',
                 nssckbi, nss_version, ckbi_version,
                 scratch / rel.replace('/', '_'),
                 rel, '100.0', '101', current_releases, verbose)
@@ -600,8 +622,8 @@ def main():
             set_list_state(rhel_list_file, rel, 'staged')
             out.update_row(rel, [rel, 'rhel-10', 'staged' if rc == 0 else 'error'])
 
-        _update(fedora, modified / 'fedora' / 'ca-certificates',
-                lambda r: packages / 'fedora' / 'ca-certificates' / r, '1.0', '2',
+        _update(fedora, modified / 'fedora' / 'certdata.txt',
+                lambda r: packages / 'fedora' / r, '1.0', '2',
                 fedora_list_file, 'fedora')
 
         out.log(f'Finished updates for ca-certificates {ckbi_version} '

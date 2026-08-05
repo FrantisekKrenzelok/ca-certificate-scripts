@@ -92,19 +92,19 @@ errata_map = {}
 config = {}
 Jira = None
 
-# handle package location differences for rhel9 centos stream
+# handle package location differences for rhel9+ centos stream
 def get_git_packages_dir(distro,package,release) :
     if distro == 'centos' :
-        return packages_dir[distro]+"-fork/%s"%package;
-    return packages_dir[distro]+"%s/%s"%(package,release)
+        return packages_dir[distro]+"-fork"
+    return packages_dir[distro]+release
 
 def get_build_packages_dir(distro,package,release) :
     if distro == 'centos' :
-        return packages_dir[distro]+"/%s"%package;
+        return packages_dir[distro]
     major = safe_int(release_get_major(release))
     if major > 9:
-        return packages_dir[distro]+"%s/rhel%s-main"%(package,major)
-    return packages_dir[distro]+"%s/%s"%(package,release)
+        return packages_dir[distro]+"rhel%s-main"%major
+    return packages_dir[distro]+release
 # Release helpers and errata-map functions are in caupdate.release.
 def _release_is_centos_stream(release):
     return release_is_centos_stream(release, ga_list)
