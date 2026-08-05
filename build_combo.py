@@ -328,17 +328,38 @@ def main():
                     help='Copy certdata from local directory instead of downloading')
     ap.add_argument('-p', metavar='PRUNE_DATE', default='NEVER',
                     help='Prune date for certdata')
-    ap.add_argument('releases', nargs='*', help='Release targets')
+    ap.add_argument('releases', nargs='*',
+                    help='Release targets (default: read from meta/rhel.list and meta/fedora.list)')
     args = ap.parse_args()
 
     verbose = not args.q
     out = PipelineOutput(human=args.human, title='build_combo.py')
     out.set_columns(['Release', 'Major', 'State'])
 
-    # categorise releases
+    meta = SCRIPT_LOC / 'meta'
+
+    # ── collect releases — from meta lists or explicit CLI args ───────────────
     rhel8, rhel9, rhel10, fedora = [], [], [], []
     rhel_cacerts = fedora_cacerts = False
-    for rel in args.releases:
+
+    release_sources = list(args.releases)
+
+    if not release_sources:
+        # Pipeline mode: read from meta files written by plan.py
+        rhel_list_file   = meta / 'rhel.list'
+        fedora_list_file = meta / 'fedora.list'
+        for path in (rhel_list_file, fedora_list_file):
+            if path.exists():
+                for line in path.read_text().splitlines():
+                    if line.strip():
+                        release_sources.append(line.split(':')[0])
+        if not release_sources:
+            print('No releases specified and meta/rhel.list / meta/fedora.list are empty.',
+                  file=sys.stderr)
+            print('Run plan.py first, or pass releases as arguments.', file=sys.stderr)
+            sys.exit(1)
+
+    for rel in release_sources:
         if rel.startswith('rhel-8'):
             rhel8.append(rel); rhel_cacerts = True
         elif rel.startswith('rhel-9'):
@@ -359,7 +380,6 @@ def main():
     packages = SCRIPT_LOC / 'packages'
     modified = SCRIPT_LOC / 'modified'
     cacerts  = SCRIPT_LOC / 'cacerts'
-    meta     = SCRIPT_LOC / 'meta'
     scratch  = SCRIPT_LOC / f'scratch.{os.getpid()}'
 
     # ── directory setup ───────────────────────────────────────────────────────
