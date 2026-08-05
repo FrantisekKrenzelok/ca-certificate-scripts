@@ -26,6 +26,7 @@ from pathlib import Path
 
 from caupdate.tui import PipelineOutput
 from caupdate.release_config import uses_centos_stream
+from caupdate.prereqs import check_prereqs
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -318,20 +319,49 @@ def build_current_releases() -> list[str]:
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Update ca-certificates dist-git trees')
-    ap.add_argument('-q', action='store_true', help='Quiet (suppress git diff)')
-    ap.add_argument('--human', action='store_true', help='Rich TUI output')
-    ap.add_argument('-d', action='store_true', help='Use NSS dev tip')
-    ap.add_argument('-n', metavar='NSS_RELEASE', help='Specific NSS release')
+    ap = argparse.ArgumentParser(
+        description='''
+Download upstream Mozilla NSS certdata, apply per-release modifications,
+and update dist-git package trees for ca-certificates.
+
+Pipeline usage (reads releases from meta/ written by plan.py):
+  ./build_combo.py
+
+Manual usage:
+  ./build_combo.py rhel-10.3 rhel-9.9.0 f45 rawhide
+
+Required tools: git, rhpkg, centpkg (for CentOS Stream majors),
+fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
+''',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument('-q', action='store_true',
+                    help='Quiet mode — suppress git diff and status output')
+    ap.add_argument('--human', action='store_true',
+                    help='Rich TUI output with live status table and log panel')
+    ap.add_argument('-d', action='store_true',
+                    help='Use NSS development tip instead of latest release')
+    ap.add_argument('-n', metavar='NSS_RELEASE',
+                    help='Fetch a specific NSS release (e.g. 3_114)')
     ap.add_argument('-t', metavar='NSS_TYPE', default='RTM',
-                    help='NSS release type (RTM, BETA1, BETA2)')
+                    help='NSS release type: RTM, BETA1, BETA2 (default: RTM)')
     ap.add_argument('-f', metavar='CERT_DATA_DIR',
-                    help='Copy certdata from local directory instead of downloading')
+                    help='Copy certdata.txt, nss.h, nssckbi.h from a local '
+                         'directory instead of downloading from Mozilla')
     ap.add_argument('-p', metavar='PRUNE_DATE', default='NEVER',
-                    help='Prune date for certdata')
+                    help='Distrust-after date for certdata pruning (default: NEVER)')
     ap.add_argument('releases', nargs='*',
-                    help='Release targets (default: read from meta/rhel.list and meta/fedora.list)')
+                    help='Release targets e.g. rhel-10.3 rhel-9.9.0 f45 rawhide. '
+                         'Omit to read from meta/rhel.list and meta/fedora.list.')
     args = ap.parse_args()
+
+    # ── pre-flight checks ─────────────────────────────────────────────────────
+    needed = ['git', 'kerberos']
+    if not args.f:
+        pass   # wget replaced by urllib; no extra tool needed
+    # We don't know yet which distros are needed, so check all packaging tools
+    needed += ['rhpkg', 'fedpkg']
+    check_prereqs(needed, 'build_combo.py')
 
     verbose = not args.q
     out = PipelineOutput(human=args.human, title='build_combo.py')
@@ -481,32 +511,17 @@ def main():
 
     if rhel_cacerts:
         print('>> fetching rhel ca-certificates')
-        _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates'])
-        # Move branch worktrees from packages/ca-certificates/<rel> → packages/rhel/<rel>
-        rhel_ca_git = packages / 'ca-certificates'
-        for rel in rhel8 + rhel9 + rhel10:
-            if (rhel_ca_git / rel).is_dir():
-                _run(['git', 'worktree', 'move', rel, str(packages / 'rhel' / rel)],
-                     cwd=rhel_ca_git)
+        _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates', 'rhel'],
+             cwd=packages)
 
         print('>> fetching centos ca-certificates')
-        os.makedirs('centos', exist_ok=True)
-        _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates'],
-             cwd=packages / 'centos')
+        _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates', 'centos'],
+             cwd=packages)
         # Get upstream URL from the centos git repo root (before moving worktrees)
-        centos_ca_git = packages / 'centos' / 'ca-certificates'
         r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
                            capture_output=True, text=True,
-                           cwd=centos_ca_git)
+                           cwd=packages / 'centos')
         ca_upstream = r.stdout.strip()
-
-        # Move branch worktrees from packages/centos/ca-certificates/<branch> → packages/centos/<branch>
-        for ver in centos_list:
-            branch = f'c{ver}s'
-            if (centos_ca_git / branch).is_dir():
-                _run(['git', 'worktree', 'move', branch,
-                      str(packages / 'centos' / branch)],
-                     cwd=centos_ca_git)
 
         fork_base = packages / 'centos-fork'
         for version in centos_list:
@@ -533,7 +548,7 @@ def main():
         _run(['fedpkg', '-q', 'clone', '-B', 'ca-certificates'],
              cwd=packages / 'fedora')
         # Move worktrees from packages/fedora/ca-certificates/<rel> → packages/fedora/<rel>
-        fedora_ca_git = packages / 'fedora' / 'ca-certificates'
+        fedora_ca_git = packages / 'fedora'
         for rel in fedora:
             src = fedora_ca_git / rel
             if src.is_dir():

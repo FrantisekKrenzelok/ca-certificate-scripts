@@ -36,6 +36,7 @@ from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
 from caupdate.tui import PipelineOutput
 from caupdate.release_config import uses_centos_stream
+from caupdate.prereqs import check_prereqs
 from caupdate.release import (
     release_get_major, safe_int,
     release_is_centos_stream,
@@ -786,11 +787,52 @@ def build(release,package):
 # argument parsing and configuration initialization
 #
 #######################################################
+_USAGE = """\
+process.py — Advance the ca-certificates release lifecycle.
+
+Reads meta/rhel.list and meta/fedora.list (written by plan.py) and
+drives each release through: git checkin → push → (CentOS Stream MR) →
+Brew/Koji build → Errata advisory creation and attachment.
+
+The script is idempotent: re-run it as each step completes.
+Use --loop to run continuously until all releases reach 'complete'.
+
+Usage:
+  ./process.py [options]
+
+Options:
+  -r rhel.list      Override default meta/rhel.list path
+  -o email          Package owner e-mail (overrides config.cfg)
+  -m email          Manager e-mail (overrides config.cfg)
+  -q email          QE contact e-mail (overrides config.cfg)
+  -v version        CKBI version string (overrides meta/ckbiversion.txt)
+  -f firefox        Firefox version string (overrides meta/firefox_info.txt)
+  -y year           Override year (default: current year)
+  -e url            Errata Tool base URL
+  -j url            Jira base URL
+  -l url            GitLab base URL
+  --resync          Force refresh of the errata product-version cache
+  --get-ga          Print current GA releases and exit
+  --getconfig key   Print a config.cfg value and exit
+  --dry-run         Skip git push; log other actions normally
+  --loop            Re-run every --interval seconds until all complete
+  --interval N      Loop sleep interval in seconds (default: 300)
+  --human           Rich TUI output with live status table
+
+Required tools: git, rhpkg (RHEL builds), fedpkg (Fedora builds),
+centpkg (CentOS Stream builds), brew (RHEL build status),
+koji (Fedora/CentOS build status), kinit (Kerberos ticket).
+"""
+
+if '--help' in sys.argv or '-h' in sys.argv:
+    print(_USAGE)
+    sys.exit(0)
+
 try:
     opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:j:l:",["resync","get-ga","getconfig=","dry-run","loop","interval=","human"])
 except getopt.GetoptError as err:
     print(err)
-    print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-j jiraaurlbase]')
+    print('Run with --help for usage information.')
     sys.exit(2)
 
 resync=False
@@ -896,6 +938,9 @@ for opt, arg in opts:
         else:
             print(config[arg]);
         sys.exit(0)
+
+check_prereqs(['git', 'kerberos', 'rhpkg', 'fedpkg', 'centpkg', 'brew', 'koji'],
+              'process.py')
 
 if jira_api_key is not None:
     Jira = make_jira_client(jira_url_base, jira_api_key, jira_user=jira_user)

@@ -37,6 +37,7 @@ from caupdate.release import (
     load_errata_map, CA_CERTS_FILE,
 )
 from caupdate.tui import PipelineOutput
+from caupdate.prereqs import check_prereqs
 from caupdate.issues import (
     issue_create, issue_lookup, issue_request_clone, has_clone_links,
     make_jira_client, jira_fixversion, bug_summary_short,
@@ -311,6 +312,47 @@ def _maybe_create_crypto_epic(release, bugnumber, is_zstream=False):
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 
+_USAGE = """\
+plan.py — Pre-pipeline planning step for ca-certificates updates.
+
+Creates RHEL Jira bugs, requests z-stream clones, creates CRYPTO errata
+epics via cryptosvc, and triages RHEL bugs (priority/severity/regression +
+[DEV]/[QE] CRYPTO splits).  Writes meta/rhel.list and meta/fedora.list so
+that build_combo.py and process.py can run without manual bug numbers.
+
+Run plan.py first, then build_combo.py, then process.py.
+
+Usage (pick one mode):
+  ./plan.py --rhel  -f <firefox>               auto-discover active RHEL releases
+  ./plan.py --fedora                            auto-discover Fedora releases
+
+Options:
+  -f <firefox>               Firefox version for the update (required for --rhel)
+  -n <nss_version>           NSS version (auto-fetched from Mozilla if omitted)
+  -s <mcs_version>           Microsoft code-signing version
+  -v <ckbi_version>          Override CKBI version
+  -o <email>                 Package owner e-mail (overrides config.cfg)
+  -m <email>                 Manager e-mail (overrides config.cfg)
+  --rhel                     Discover and plan all active RHEL releases
+  --fedora                   Discover current/pending Fedora releases via Bodhi
+  --dry-run                  Show what would happen without creating anything
+  --resync                   Force refresh of the errata product-version cache
+  --human                    Rich TUI output with live status table
+  --loop                     Re-run every --interval seconds until all bugs exist
+  --interval N               Loop sleep in seconds (default: 300)
+  --crypto-epic-parent KEY   Set this CRYPTO epic as parent of new CRYPTO epics
+  --dev-sprint ID            Set sprint on [DEV] CRYPTO tasks after triage
+  --qe-sprint ID             Set sprint on [QE] CRYPTO tasks after triage
+
+Required: valid Kerberos ticket (kinit) for the Errata Tool API.
+Config:   config.cfg — jira_url, jira_api_key, jira_user,
+                       cryptosvc_url, cryptosvc_access_token, cryptosvc_pat
+"""
+
+if '--help' in sys.argv or '-h' in sys.argv:
+    print(_USAGE)
+    sys.exit(0)
+
 try:
     opts, _ = getopt.getopt(
         sys.argv[1:], 'f:n:s:v:o:m:', ['dry-run', 'resync', 'rhel', 'fedora',
@@ -319,7 +361,7 @@ try:
                                         'human', 'loop', 'interval='])
 except getopt.GetoptError as err:
     print(err)
-    print('Usage: plan.py -f <firefox> [-n <nss_version>] [-s <mcs_version>] [--rhel | --fedora] [--dry-run] [--resync]')
+    print('Run with --help for usage information.')
     sys.exit(2)
 
 mode            = None   # 'rhel' or 'fedora'
@@ -386,6 +428,9 @@ for opt, arg in opts:
     elif opt == '--human':     human = True
     elif opt == '--loop':      loop_mode = True
     elif opt == '--interval':  loop_interval = int(arg)
+
+if not DRY_RUN:
+    check_prereqs(['kinit'], 'plan.py')
 
 if mode is None:
     print('Specify a mode: --rhel or --fedora')
