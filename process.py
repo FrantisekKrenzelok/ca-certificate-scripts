@@ -72,7 +72,7 @@ distro=None
 # fedora releases
 #
 packages_dir = {
-    "rhel":"./packages/",
+    "rhel":"./packages/rhel/",
     "fedora":"./packages/fedora/",
     "centos":"./packages/centos"
 }

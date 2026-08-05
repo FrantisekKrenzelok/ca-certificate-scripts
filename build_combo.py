@@ -390,6 +390,7 @@ def main():
         shutil.rmtree(d, ignore_errors=True)
     meta.mkdir(exist_ok=True)
     packages.mkdir()
+    (packages / 'rhel').mkdir()
     cacerts.mkdir()
 
     centos_list = []
@@ -477,11 +478,11 @@ def main():
     if rhel_cacerts:
         print('>> fetching rhel ca-certificates')
         _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates'])
-        # Move branch worktrees from packages/ca-certificates/<rel> → packages/<rel>
+        # Move branch worktrees from packages/ca-certificates/<rel> → packages/rhel/<rel>
         rhel_ca_git = packages / 'ca-certificates'
         for rel in rhel8 + rhel9 + rhel10:
             if (rhel_ca_git / rel).is_dir():
-                _run(['git', 'worktree', 'move', rel, str(packages / rel)],
+                _run(['git', 'worktree', 'move', rel, str(packages / 'rhel' / rel)],
                      cwd=rhel_ca_git)
 
         print('>> fetching centos ca-certificates')
@@ -587,7 +588,7 @@ def main():
         out.set_subtitle(f'NSS {nss_version} · CKBI {ckbi_version}')
 
         _update(rhel8, modified / 'rhel8' / 'certdata.txt',
-                lambda r: packages / r, '80.0', '81',
+                lambda r: packages / 'rhel' / r, '80.0', '81',
                 rhel_list_file, 'rhel-8')
 
         for rel in rhel9:
@@ -596,7 +597,7 @@ def main():
             if rel in current_releases:
                 pkg = packages / 'centos-fork' / 'c9s'
             else:
-                pkg = packages / rel
+                pkg = packages / 'rhel' / rel
             rc = cacertificates_update(
                 pkg, modified / 'rhel9' / 'certdata.txt',
                 nssckbi, nss_version, ckbi_version,
@@ -612,7 +613,7 @@ def main():
             if rel in current_releases:
                 pkg = packages / 'centos-fork' / 'c10s'
             else:
-                pkg = packages / rel
+                pkg = packages / 'rhel' / rel
             rc = cacertificates_update(
                 pkg, modified / 'rhel10' / 'certdata.txt',
                 nssckbi, nss_version, ckbi_version,
