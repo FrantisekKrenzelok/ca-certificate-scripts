@@ -31,7 +31,7 @@ import getopt
 import asn1
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from datetime import datetime
+from datetime import datetime, timezone
 from dateutil.parser import parse
 
 objects = []
@@ -102,10 +102,10 @@ def formatHex(byteval) :
 def getdate(dateString):
     print("dateString= %s"%dateString)
     if dateString.upper() == "THISYEAR":
-        return datetime(datetime.today().year,12,31,11,59,59,9999)
+        return datetime(datetime.today().year,12,31,11,59,59,9999, tzinfo=timezone.utc)
     if dateString.upper() == "TODAY":
-        return datetime.today()
-    return parse(dateString, fuzzy=True);
+        return datetime.now(tz=timezone.utc)
+    return parse(dateString, fuzzy=True).replace(tzinfo=timezone.utc)
 
 def getTrust(objlist, serial, issuer) :
     for obj in objlist:
@@ -277,12 +277,12 @@ if verifyDate :
     for obj in objects:
         if obj['CKA_CLASS'] == 'CKO_CERTIFICATE' :
             cert = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
-            if (cert.not_valid_after <= date) :
+            if (cert.not_valid_after_utc <= date) :
                 trust_obj = getTrust(objects,obj['CKA_SERIAL_NUMBER'],obj['CKA_ISSUER'])
                 # we don't remove distrusted expired certificates
                 if  not isDistrusted(trust_obj) :
                     print("  Remove cert %s"%obj['CKA_LABEL'])
-                    print("     Expires: %s"%cert.not_valid_after.strftime("%m/%d/%Y"))
+                    print("     Expires: %s"%cert.not_valid_after_utc.strftime("%m/%d/%Y"))
                     print("     Prune time %s: "%date.strftime("%m/%d/%Y"))
                     obj['Comment'] = None;
                     if (trust_obj != None):
@@ -303,9 +303,9 @@ for certval in pemcerts:
             except:
                 label="Unknown Certificate"
     if verifyDate :
-        if cert.not_valid_after <= date:
+        if cert.not_valid_after_utc <= date:
             print("  Skipping code signing cert %s"%label)
-            print("     Expires: %s"%cert.not_valid_after.strftime("%m/%d/%Y"))
+            print("     Expires: %s"%cert.not_valid_after_utc.strftime("%m/%d/%Y"))
             print("     Prune time %s: "%date.strftime("%m/%d/%Y"))
             continue
     certhashsha1 = cert.fingerprint(hashes.SHA1())
@@ -368,8 +368,8 @@ for certval in pemcerts:
     else:
         comment +=  formatHex(sn.to_bytes((sn.bit_length()+7)//8,"big")) + '\n'
     comment +=  '# Subject: ' + cert.subject.rfc4514_string() + '\n'
-    comment +=  '# Not Valid Before: ' + cert.not_valid_before.strftime(time) + '\n'
-    comment +=  '# Not Valid After: ' + cert.not_valid_after.strftime(time) + '\n'
+    comment +=  '# Not Valid Before: ' + cert.not_valid_before_utc.strftime(time) + '\n'
+    comment +=  '# Not Valid After: ' + cert.not_valid_after_utc_utc.strftime(time) + '\n'
     comment +=  '# Fingerprint (MD5): ' + formatHex(certhashmd5) + '\n'
     comment +=  '# Fingerprint (SHA1): ' + formatHex(certhashsha1) + '\n'
     obj['Comment']= comment%"Certificate"
