@@ -104,8 +104,9 @@ class TestGetNeedZstreamClone:
         assert rel.get_need_zstream_clone('rhel-7.9', self.GA) is False
 
     def test_rhel8(self):
+        # RHEL 8 has zstream_clone=false in release_config.toml — no clone needed
         ga = ['rhel-8.10.0']
-        assert rel.get_need_zstream_clone('rhel-8.8.0', ga) is True
+        assert rel.get_need_zstream_clone('rhel-8.8.0', ga) is False
 
     def test_rhel10_ga_two_part_key(self):
         # RHEL 10 uses 2-part keys in the errata map ('rhel-10.3', not 'rhel-10.3.0').
@@ -125,21 +126,7 @@ class TestGetNeedZstreamClone:
 # is_latest_z_stream
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestIsLatestZStream:
-    ZS = ['rhel-9.6.0', 'rhel-8.10.0']
-
-    def test_in_list(self):
-        assert rel.is_latest_z_stream('rhel-9.6.0', self.ZS) is True
-
-    def test_not_in_list(self):
-        assert rel.is_latest_z_stream('rhel-9.4.0', self.ZS) is False
-
-    def test_normalises_two_part(self):
-        zs = ['rhel-9.6.0']
-        assert rel.is_latest_z_stream('rhel-9.6', zs) is True
-
-    def test_empty_list(self):
-        assert rel.is_latest_z_stream('rhel-9.6.0', []) is False
+# TestIsLatestZStream removed — is_latest_z_stream deleted as dead code
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -159,6 +146,7 @@ class TestReleaseIsCentosStream:
         assert rel.release_is_centos_stream('rhel-7.9', self.GA) is False
 
     def test_rhel8(self):
+        # RHEL 8 now has centos_stream=true (c8s → distrobaker → rhel-8-main)
         ga = ['rhel-8.10.0']
         assert rel.release_is_centos_stream('rhel-8.10.0', ga) is True
 
@@ -309,24 +297,7 @@ class TestGetGaList:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# get_latest_zstreams
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestGetLatestZstreams:
-    def test_returns_z_releases(self):
-        zs = rel.get_latest_zstreams(SAMPLE_ERRATA_MAP)
-        # All entries in sample have .Z in name
-        for r in zs:
-            assert '.Z' in SAMPLE_ERRATA_MAP[r]['name']
-
-    def test_excludes_ga(self):
-        zs = rel.get_latest_zstreams(SAMPLE_ERRATA_MAP)
-        assert 'rhel-10.3' not in zs   # .GA not .Z
-
-    def test_one_per_major(self):
-        zs = rel.get_latest_zstreams(SAMPLE_ERRATA_MAP)
-        majors = [rel.release_get_major(r) for r in zs]
-        assert len(majors) == len(set(majors))
+# get_latest_zstreams was removed — get_ga_list covers the same use case
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,6 +356,7 @@ class TestDiscoverRhel:
 
     def test_rhel8_head_is_ga_with_zstream(self, discovered):
         # rhel-8.10.0 is head of z-stream-only major with MAIN+EUS → use_zstream=True
+        # dist_branch in TOML controls git checkout only, not issue classification
         d = self._by_release(discovered)
         assert d['rhel-8.10.0']['is_ga'] is True
         assert d['rhel-8.10.0']['use_zstream'] is True
@@ -484,7 +456,7 @@ class TestLoadErrataMap:
         data = {'rhel-9.6.0': {'name': 'RHEL-9.6.0.Z.MAIN+EUS',
                                 'description': '', 'id': 1, 'release_id': 1}}
         cache.write_text(today + '\n' + json.dumps(data))
-        errata_map, ga_list, zstreams = rel.load_errata_map(
+        errata_map, ga_list = rel.load_errata_map(
             'http://unused', str(cache))
         assert 'rhel-9.6.0' in errata_map
 
@@ -510,10 +482,10 @@ class TestLoadErrataMap:
             rel.load_errata_map('http://fake', str(cache), force_resync=True)
             mock_ri.assert_called_once()
 
-    def test_returns_ga_list_and_zstreams(self, tmp_path):
+    def test_returns_errata_map_and_ga_list(self, tmp_path):
         cache = tmp_path / 'errata_cache'
         today = date.today().strftime('%Y-%m-%d')
         cache.write_text(today + '\n' + json.dumps(SAMPLE_ERRATA_MAP))
-        _, ga_list, zstreams = rel.load_errata_map('http://unused', str(cache))
+        errata_map, ga_list = rel.load_errata_map('http://unused', str(cache))
+        assert isinstance(errata_map, dict)
         assert isinstance(ga_list, list)
-        assert isinstance(zstreams, list)

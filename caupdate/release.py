@@ -12,6 +12,7 @@ import requests
 
 from functools import cmp_to_key
 from requests_kerberos import HTTPKerberosAuth
+from caupdate.release_config import zstream_clone as _zstream_clone, uses_centos_stream as _uses_centos_stream
 
 CA_CERTS_FILE = '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 
@@ -36,7 +37,8 @@ def safe_int(a):
 
 def get_need_zstream_clone(release, ga_list):
     """Return True if this release needs a z-stream bug clone from the y-stream."""
-    if safe_int(release_get_major(release)) < 8:
+    major = safe_int(release_get_major(release))
+    if not _zstream_clone(major):
         return False
     # Normalise 2-part (rhel-X.Y) to 3-part (rhel-X.Y.0) for ga_list comparison,
     # but also accept the original form — RHEL 10 uses 2-part keys in the errata
@@ -44,20 +46,11 @@ def get_need_zstream_clone(release, ga_list):
     normalised = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
     return normalised not in ga_list and release not in ga_list
 
-def is_latest_z_stream(release, latest_zstreams):
-    """Return True if this is the latest z-stream for its major version."""
-    release = re.sub(r'^rhel-(\d+\.\d+)$', r'rhel-\1.0', release)
-    return release in latest_zstreams
-
-def release_requires_build(release, latest_zstreams):
-    """Return True if this release should trigger its own build."""
-    if safe_int(release_get_major(release)) < 9:
-        return True
-    return is_latest_z_stream(release, latest_zstreams)
 
 def release_is_centos_stream(release, ga_list):
     """Return True if this RHEL release is handled via CentOS Stream."""
-    if safe_int(release_get_major(release)) < 8:
+    major = safe_int(release_get_major(release))
+    if not _uses_centos_stream(major):
         return False
     return not get_need_zstream_clone(release, ga_list)
 
@@ -125,8 +118,11 @@ def errata_nvrcmp(rel1, rel2):
     return 0
 
 def _errata_get_version_order(version):
+    # MAIN+EUS variants outrank everything else; CVE-CONTAINER is preferred over plain MAIN+EUS
+    if 'MAIN+EUS' in version:
+        return 12 if 'CVE-CONTAINER' in version else 11
     order = {'.EUS': 10, '-EUS': 9, '.Z': 8, '.AUS': 7, '-AUS': 6,
-             '.TUS': 5, '-TUS': 4, '.E4S': 3, '-E4S': 2}
+             '.TUS': 5, '-TUS': 4, '.E4S': 3, '-E4S': 2, '.E2S': 1, '-E2S': 0}
     for suffix, score in order.items():
         if version.endswith(suffix):
             return score
@@ -141,10 +137,6 @@ def _errata_is_better(best, compare, isga):
     comparename = compare['name']
     if comparename.endswith('.GA'):
         return isga
-    if bestname.endswith('.MAIN+EUS'):
-        return False
-    if comparename.endswith('.MAIN+EUS'):
-        return True
     return _errata_get_version_order(bestname) < _errata_get_version_order(comparename)
 
 def errata_candidate_to_release(brew_tag):
@@ -260,24 +252,6 @@ def get_ga_list(errata_map):
         l_ga_list.append(last_ga)
     return l_ga_list
 
-def get_latest_zstreams(errata_map):
-    """Return the latest z-stream release per major version."""
-    l_zstream_list = []
-    last_major = 0
-    last_zstream = None
-    for release in errata_map.keys():
-        name = errata_map[release]['name'] if errata_map[release] else ''
-        if '.Z' not in name:
-            continue
-        current_major = release_get_major(release)
-        if last_major != current_major:
-            if last_zstream is not None:
-                l_zstream_list.append(last_zstream)
-            last_major = current_major
-        last_zstream = release
-    if last_zstream is not None:
-        l_zstream_list.append(last_zstream)
-    return l_zstream_list
 
 def discover_fedora_releases():
     """
@@ -310,7 +284,7 @@ def discover_fedora_releases():
 
 def is_sustaining_release(pv_name):
     """Return True if the errata product name indicates a Sustaining Engineering stream."""
-    return any(x in pv_name for x in ('E4S', 'AUS', 'TUS'))
+    return any(x in pv_name for x in ('E4S', 'E2S', 'AUS', 'TUS'))
 
 def _relevant_release(pv_name, is_head):
     """
@@ -323,7 +297,7 @@ def _relevant_release(pv_name, is_head):
         return True
     if 'EXTENSION' in pv_name:
         return False
-    for keep in ('MAIN+EUS', 'E4S', 'AUS', 'TUS'):
+    for keep in ('MAIN+EUS', 'E4S', 'E2S', 'AUS', 'TUS'):
         if keep in pv_name:
             return True
     # Plain .Z releases (e.g. RHEL-10.2.Z) with no further qualifier are standard z-streams
@@ -430,4 +404,4 @@ def load_errata_map(errata_url_base, cache_file, ca_certs_file=CA_CERTS_FILE, fo
             f.write(datetime.date.today().strftime('%Y-%m-%d') + '\n')
             f.write(json.dumps(errata_map, indent=1))
 
-    return errata_map, get_ga_list(errata_map), get_latest_zstreams(errata_map)
+    return errata_map, get_ga_list(errata_map)
