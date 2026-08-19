@@ -6,3 +6,4 @@ config.cfg
 errata_cache
 *.pyc
 __pycache__/
+scratch.*
