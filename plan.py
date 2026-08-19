@@ -105,6 +105,33 @@ def _triage_rhel_bug(bugnumber):
     else:
         print(f'  WARNING: triage status failed: {r.status_code} {r.text[:120]}')
 
+def _find_dev_child(bugnumber):
+    """Return the [DEV] CRYPTO split key linked to a RHEL bug, or None."""
+    if not Jira or bugnumber in ('0', 'DRY-0'):
+        return None
+    try:
+        issue = Jira.get(bugnumber)
+        links = issue.get('fields', {}).get('issuelinks', [])
+    except Exception as e:
+        print(f'  WARNING: could not fetch issue links for {bugnumber}: {e}')
+        return None
+    for link in links:
+        if link.get('type', {}).get('id') != '10120':
+            continue
+        linked = link.get('outwardIssue') or link.get('inwardIssue', {})
+        linked_key = linked.get('key', '')
+        if not linked_key.startswith('CRYPTO-'):
+            continue
+        try:
+            li      = Jira.get(linked_key)
+            summary = li.get('fields', {}).get('summary', '')
+            if summary.startswith('[DEV]'):
+                return linked_key
+        except Exception:
+            continue
+    return None
+
+
 def _set_split_sprints(bugnumber):
     """After triage, find [DEV]/[QE] splits linked to the RHEL bug and set
     their sprints via cryptosvc's sprint-add update. Uses dev_sprint and
@@ -465,7 +492,7 @@ ga_list    = []
 
 if mode == 'rhel':
     try:
-        errata_map, ga_list, _ = load_errata_map(
+        errata_map, ga_list = load_errata_map(
             errata_url_base, errata_cache_file, ca_certs_file, force_resync=resync)
     except Exception as e:
         if DRY_RUN:
@@ -483,12 +510,12 @@ if mode == 'rhel' and jira_api_key and not DRY_RUN:
 
 # Load existing rhel.list so we can merge rather than overwrite.
 # The user is responsible for wiping rhel.list when starting a fresh cycle.
-existing_rhel = {}   # release → 9-tuple of field strings
-crypto_map    = {}   # release → CRYPTO key
+existing_rhel = {}   # release → field list
+crypto_map    = {}   # release → CRYPTO epic key
 if os.path.exists(rhel_list):
     for line in open(rhel_list):
         parts = line.strip().split(':')
-        if len(parts) >= 8:
+        if len(parts) >= 7:
             existing_rhel[parts[0]] = parts
             if len(parts) >= 9 and parts[8]:
                 crypto_map[parts[0]] = parts[8]
@@ -548,28 +575,38 @@ with out:
             if is_sustaining:
                 _set_rhel_qa_contact(bugnumber)
                 crypto_key = ''
+                crypto_dev  = ''
             else:
                 crypto_key = _maybe_create_crypto_epic(release, bugnumber,
                                  is_zstream=not is_ga) or ''
+                # Find the [DEV] child issue created by triage — store for process.py
+                crypto_dev = _find_dev_child(bugnumber) or ''
+                if crypto_dev:
+                    out.log(f'  crypto_dev={crypto_dev}')
 
             if release in existing_rhel:
                 prev = existing_rhel[release]
+                # New format: release:branch:bug:errata:nvr:state:glmr:glup:crypto:dev
+                merged_branch = prev[1] if len(prev) > 1 else ''
                 merged_bug    = bugnumber if bugnumber != '0' else prev[2]
-                merged_errata = prev[3]
-                merged_nvr    = prev[4]
-                merged_state  = prev[5]
-                merged_glmr   = prev[6]
-                merged_glup   = prev[7]
+                merged_errata = prev[3] if len(prev) > 3 else '0'
+                merged_nvr    = prev[4] if len(prev) > 4 else ''
+                merged_state  = prev[5] if len(prev) > 5 else 'planned'
+                merged_glmr   = prev[6] if len(prev) > 6 else ''
+                merged_glup   = prev[7] if len(prev) > 7 else ''
                 merged_crypto = crypto_key or (prev[8] if len(prev) > 8 else '')
+                merged_dev    = crypto_dev or (prev[9] if len(prev) > 9 else '')
             else:
+                merged_branch = ''
                 merged_bug, merged_errata = bugnumber, '0'
                 merged_nvr, merged_state  = '', 'planned'
                 merged_glmr, merged_glup  = '', ''
                 merged_crypto             = crypto_key
+                merged_dev                = crypto_dev
 
-            rhel_entries.append((release, packages, merged_bug, merged_errata,
+            rhel_entries.append((release, merged_branch, merged_bug, merged_errata,
                                  merged_nvr, merged_state, merged_glmr,
-                                 merged_glup, merged_crypto))
+                                 merged_glup, merged_crypto, merged_dev))
             out.update_row(release, [release, label, merged_bug,
                                      merged_crypto or '–', merged_state])
 
@@ -586,7 +623,7 @@ with out:
             out.log('WARNING: no active Fedora releases found via Bodhi')
         for release in discovered:
             out.log(f'{release}: fedora')
-            fedora_entries.append((release, packages, '0', '0', '', 'planned'))
+            fedora_entries.append((release, '0', '0', '', 'planned'))
             out.update_row(release, [release, 'planned'])
 
     # ── write meta files ──────────────────────────────────────────────────────
@@ -610,7 +647,7 @@ if loop_mode:
         all(e[5] == 'planned' for e in rhel_entries)   # plan.py only reaches 'planned'
         or not rhel_entries
     ) and (
-        all(e[5] == 'planned' for e in fedora_entries)
+        all(e[4] == 'planned' for e in fedora_entries)
         or not fedora_entries
     )
     # For plan.py, loop is useful to retry releases that didn't get bugs yet
