@@ -106,7 +106,7 @@ print()
 
 # ── identify SE vs active releases ────────────────────────────────────────────
 
-errata_map, ga_list, _ = load_errata_map(errata_url, errata_cache, CA_CERTS_FILE)
+errata_map, ga_list = load_errata_map(errata_url, errata_cache, CA_CERTS_FILE)
 se_releases = {r['release'] for r in discover_rhel_releases(errata_map, ga_list)
                if r['is_sustaining']}
 
