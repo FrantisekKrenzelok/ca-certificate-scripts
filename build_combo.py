@@ -24,9 +24,17 @@ import time
 from datetime import date
 from pathlib import Path
 
+import gitlab
+
 from caupdate.tui import PipelineOutput
-from caupdate.release_config import uses_centos_stream
+from caupdate.release_config import (
+    uses_centos_stream, centos_branch as cfg_centos_branch,
+    main_branch as cfg_main_branch, restart_releases,
+    fedora_restart_releases, dist_branch as cfg_dist_branch,
+    version_parts as cfg_version_parts,
+)
 from caupdate.prereqs import check_prereqs
+from caupdate.release import release_get_major, safe_int
 
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -77,7 +85,8 @@ def make_log(vr: str, name: str = '', email: str = '') -> str:
 
 
 def set_list_state(list_file: Path, release: str, new_state: str) -> None:
-    """Update the state (field 6) of a release line in rhel.list/fedora.list.
+    """Update the state (field 5) of a release line in rhel.list/fedora.list.
+    Format: release:bugnumber:erratanumber:nvr:state:...
     Mirrors bash set_list_state(): warns and returns if file or release missing."""
     if not list_file.exists():
         print(f'WARNING: {release} not found in {list_file} (file missing — '
@@ -92,6 +101,178 @@ def set_list_state(list_file: Path, release: str, new_state: str) -> None:
         print(f'WARNING: {release} not found in {list_file}', file=sys.stderr)
         return
     list_file.write_text(new_text)
+
+
+def set_list_branch(list_file: Path, release: str, branch: str) -> None:
+    """Write the dist-git branch for a release into field 1 (second column) of rhel.list."""
+    if not list_file.exists():
+        return
+    lines = list_file.read_text().splitlines()
+    new_lines = []
+    for line in lines:
+        if not line.strip():
+            continue
+        fields = line.split(':')
+        if fields[0] == release:
+            while len(fields) < 2:
+                fields.append('')
+            fields[1] = branch
+        new_lines.append(':'.join(fields))
+    list_file.write_text('\n'.join(new_lines) + '\n')
+
+
+def _nss_tag(nss_version: str) -> str:
+    """Convert NSS version string to release tag. '3.125' → 'NSS_3_125_RTM'"""
+    return 'NSS_' + nss_version.replace('.', '_') + '_RTM'
+
+
+def _rhel_ver_str(release: str) -> str:
+    """Extract 'major.minor' string for rlIsRHEL from a release string."""
+    m = re.match(r'^rhel-(\d+)\.(\d+)', release)
+    if not m:
+        return ''
+    maj, minor = m.group(1), m.group(2)
+    return f'{maj}.{minor}'
+
+
+def update_upstream_tag_crosscheck(tests_dir: Path, nss_version: str,
+                                   codesign_tag: str, cacerts: Path,
+                                   releases_by_major: dict) -> None:
+    """Update Sanity/upstream-tag-crosscheck for a new NSS/codesign version.
+
+    - Adds hashes of the new certdata and codesign PEM to sha256sums
+    - Updates runtest.sh with rlIsRHEL entries for each release in this cycle
+    - Uploads new files to the LOOKASIDE server (graceful failure if unreachable)
+    """
+    import hashlib
+
+    crosscheck  = tests_dir / 'Sanity' / 'upstream-tag-crosscheck'
+    sha256_path = crosscheck / 'sha256sums'
+    runtest_path = crosscheck / 'runtest.sh'
+    makefile_path = crosscheck / 'Makefile'
+
+    nss_tag      = _nss_tag(nss_version)
+    nss_ver_fmt  = nss_version.replace('.', '_')
+    certdata_fname = f'certdata-{nss_tag}.txt'
+    codesign_fname = f'codesign-{codesign_tag}.pem' if codesign_tag else None
+
+    # ── hashes (from locally downloaded files, already at the correct tag) ────
+    orig = cacerts / 'certdata.txt.orig'
+    codesign_pem = cacerts / 'microsoft_sign_obj_ca.pem'
+    certdata_hash = hashlib.sha256(orig.read_bytes()).hexdigest() if orig.exists() else None
+    codesign_hash = (hashlib.sha256(codesign_pem.read_bytes()).hexdigest()
+                     if codesign_pem.exists() and codesign_fname else None)
+
+    # ── sha256sums ────────────────────────────────────────────────────────────
+    lines = sha256_path.read_text().splitlines() if sha256_path.exists() else []
+    changed = False
+    for fname, fhash in [(certdata_fname, certdata_hash),
+                         (codesign_fname, codesign_hash)]:
+        if not fname or not fhash:
+            continue
+        if any(l.endswith(f'  {fname}') for l in lines):
+            print(f'  tests: {fname} already in sha256sums')
+            continue
+        lines.append(f'{fhash}  {fname}')
+        lines = sorted(lines, key=lambda l: l.split()[-1] if l.strip() else '')
+        print(f'  tests: added {fname} hash to sha256sums')
+        changed = True
+    if changed:
+        sha256_path.write_text('\n'.join(lines) + '\n')
+
+    # ── upload new files to LOOKASIDE ─────────────────────────────────────────
+    lookaside_base = 'eng-shell1.bast-001.prod.rdu2.dc.redhat.com:/export/engineering_qa/rhts/lookaside/crypto/ca-certificates'
+    for local, remote_subdir, fname in [
+        (orig,        'certdata',     certdata_fname),
+        (codesign_pem,'code-signing', codesign_fname),
+    ]:
+        if not fname or not local.exists():
+            continue
+        if any(l.endswith(f'  {fname}') for l in sha256_path.read_text().splitlines()):
+            rc = _run(['rsync', str(local),
+                       f'{lookaside_base}/{remote_subdir}/{fname}'])
+            if rc == 0:
+                print(f'  tests: uploaded {fname} to LOOKASIDE')
+
+    # ── runtest.sh ────────────────────────────────────────────────────────────
+    runtest = runtest_path.read_text()
+    codesign_var = codesign_tag if codesign_tag else '-'
+
+    def _make_line(ver_str, nss_ver_fmt, codesign_var):
+        return (f'elif rlIsRHEL {ver_str:<4}; then '
+                f'VER={nss_ver_fmt}   CODESIGN={codesign_var} '
+                f'MODS=(reorder-comments)')
+
+    for major, releases in sorted(releases_by_major.items()):
+        # Check if a generic major-only catch-all exists (e.g. 'rlIsRHEL 10  ;')
+        generic_pat = re.search(
+            rf'elif rlIsRHEL {major}\s+;[^\n]*', runtest)
+        if generic_pat:
+            # Update the generic entry — it covers all X.Y for this major
+            new_line = _make_line(str(major), nss_ver_fmt, codesign_var)
+            runtest = runtest[:generic_pat.start()] + new_line + runtest[generic_pat.end():]
+            continue
+
+        # No generic catch-all — update/insert per-minor entries in order
+        for rel in sorted(releases,
+                          key=lambda r: [int(x) for x in re.findall(r'\d+', r)]):
+            ver_str = _rhel_ver_str(rel)
+            if not ver_str:
+                continue
+            new_line = _make_line(ver_str, nss_ver_fmt, codesign_var)
+            existing = re.search(
+                rf'elif rlIsRHEL {re.escape(ver_str)}\s*;[^\n]*', runtest)
+            if existing:
+                runtest = (runtest[:existing.start()]
+                           + new_line + runtest[existing.end():])
+            else:
+                # Insert before the `else` fallback
+                runtest = runtest.replace(
+                    'else                     VER=',
+                    f'{new_line}\n        else                     VER=')
+
+    # Update the else fallback
+    runtest = re.sub(
+        r'else\s+VER=\S+\s+CODESIGN=\S+\s+MODS=\(reorder-comments\)',
+        f'else                     VER={nss_ver_fmt}   '
+        f'CODESIGN={codesign_var} MODS=(reorder-comments)',
+        runtest)
+
+    runtest_path.write_text(runtest)
+    print(f'  tests: updated runtest.sh  VER={nss_ver_fmt}  CODESIGN={codesign_var}')
+
+    # ── stage changes ─────────────────────────────────────────────────────────
+    _run(['git', 'add',
+          'Sanity/upstream-tag-crosscheck/sha256sums',
+          'Sanity/upstream-tag-crosscheck/runtest.sh'],
+         cwd=tests_dir)
+
+
+def format_cert_log(raw: str) -> str:
+    """Convert check_certs.sh output to clean commit-message format.
+
+    Input:
+        '   Removing:\\n    # Certificate "Foo CA"\\n   Adding:\\n    # Certificate "Bar CA"'
+    Output:
+        'Removing:\\n- Foo CA\\n\\nAdding:\\n- Bar CA'
+    """
+    lines = []
+    prev_was_section = False
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s in ('Removing:', 'Adding:'):
+            if lines and not prev_was_section:
+                lines.append('')
+            lines.append(s)
+            prev_was_section = True
+        else:
+            # '# Certificate "Foo CA"'  →  '- Foo CA'
+            m = re.match(r'^#\s*Certificate\s+"(.+)"', s)
+            lines.append(f'- {m.group(1)}' if m else f'- {s}')
+            prev_was_section = False
+    return '\n'.join(lines)
 
 
 def extract_version(header_text: str, define: str) -> str:
@@ -196,9 +377,8 @@ def add_patch(spec_path: Path,
             out.append(line)
             out.append(make_log(f'{version}-{release}', name, email) + '\n')
             out.append(f'- Update to CKBI {ckbi_version} from NSS {nss_version}\n')
-            for entry in cert_log.splitlines():
-                if entry.strip():
-                    out.append(f'- {entry}\n')
+            for entry in format_cert_log(cert_log).splitlines():
+                out.append(f'  {entry}\n')
             out.append('\n')
             continue
 
@@ -210,7 +390,9 @@ def add_patch(spec_path: Path,
     checkin = spec_path.parent / 'checkin.log'
     with checkin.open('w') as f:
         f.write(f'Update to CKBI {ckbi_version} from NSS {nss_version}\n')
-        f.write(cert_log)
+        f.write('\n')
+        f.write(format_cert_log(cert_log))
+        f.write('\n')
 
 
 # ── package update ────────────────────────────────────────────────────────────
@@ -224,38 +406,45 @@ def cacertificates_update(pkg_dir: Path,
                            release: str,
                            restart_release_z: str,
                            restart_release_base: str,
-                           current_releases: list[str],
+                           ga_releases: list[str],
                            verbose: bool = True) -> int:
     """Update a ca-certificates dist-git checkout.  Returns 0 on success."""
 
+    print(f'  [{release}] pkg_dir  : {pkg_dir}')
+    print(f'  [{release}] certdata : {certdata}')
+
     if not certdata.is_file():
-        print(f'!!!Skipping ca-certificates build for {release}. '
-              f'no certdata.txt generated')
+        print(f'!!!Skipping ca-certificates build for {release}: '
+              f'certdata.txt not found at {certdata}')
         return 1
 
     if not pkg_dir.is_dir():
-        print(f'!!!Skipping ca-certificates build for {release}. '
-              f'no git repository found')
+        print(f'!!!Skipping ca-certificates build for {release}: '
+              f'pkg dir not found: {pkg_dir}')
         return 1
 
     restart_release = (restart_release_base
-                       if release in current_releases
+                       if release in ga_releases
                        else restart_release_z)
+    print(f'  [{release}] restart_release: {restart_release} '
+          f'(ga={release in ga_releases})')
 
     scratch.mkdir(parents=True, exist_ok=True)
 
     # diff certdata
     old_certdata = pkg_dir / 'certdata.txt'
     cert_log     = scratch / 'cert_log'
+    if not old_certdata.exists():
+        print(f'  [{release}] WARNING: no existing certdata.txt in {pkg_dir}')
     _run([str(SCRIPT_LOC / 'check_certs.sh'),
           str(old_certdata), str(certdata)],
          stdout=cert_log, cwd=pkg_dir)
 
-    if old_certdata.read_bytes() == certdata.read_bytes():
-        print(f'Skipping ca-certificates build for {release}. '
-              f'certdata is already up to date')
+    if old_certdata.exists() and old_certdata.read_bytes() == certdata.read_bytes():
+        print(f'  [{release}] certdata unchanged — skipping update')
         return 0
 
+    print(f'  [{release}] certdata differs — applying update')
     print('>>> update ca-certificates.spec file')
     year = date.today().strftime('%Y')
 
@@ -275,8 +464,20 @@ def cacertificates_update(pkg_dir: Path,
 
     if verbose:
         _run(['git', '--no-pager', 'diff', 'ca-certificates.spec'], cwd=pkg_dir)
-    _run(['git', 'add', 'ca-certificates.spec', 'nssckbi.h', 'certdata.txt'],
-         cwd=pkg_dir)
+    rc_add = _run(['git', 'add', 'ca-certificates.spec', 'nssckbi.h', 'certdata.txt'],
+                  cwd=pkg_dir)
+    if rc_add != 0:
+        print(f'  [{release}] ERROR: git add failed (rc={rc_add})', file=sys.stderr)
+        return rc_add
+
+    r = subprocess.run(['git', 'status', '--short'], capture_output=True,
+                       text=True, cwd=pkg_dir)
+    staged = [l for l in r.stdout.splitlines() if l.startswith(('A ', 'M ', 'D '))]
+    if staged:
+        print(f'  [{release}] staged: {", ".join(staged)}')
+    else:
+        print(f'  [{release}] WARNING: git add ran but nothing is staged — '
+              f'check pkg_dir content')
     if verbose:
         _run(['git', 'status'], cwd=pkg_dir)
 
@@ -285,13 +486,57 @@ def cacertificates_update(pkg_dir: Path,
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _run(cmd, cwd=None, stdout=None):
+def _run(cmd, cwd=None, stdout=None) -> int:
+    """Run a command, print stderr on failure, return exit code."""
+    cmd_str = ' '.join(str(c) for c in cmd)
     if stdout is not None:
         with open(stdout, 'w') as f:
-            subprocess.run(cmd, cwd=cwd, stdout=f,
-                           stderr=subprocess.DEVNULL, check=False)
+            r = subprocess.run(cmd, cwd=cwd, stdout=f,
+                               stderr=subprocess.PIPE, check=False)
     else:
-        subprocess.run(cmd, cwd=cwd, check=False)
+        r = subprocess.run(cmd, cwd=cwd, stderr=subprocess.PIPE, check=False)
+    if r.returncode != 0:
+        print(f'  [ERROR rc={r.returncode}] {cmd_str}', file=sys.stderr)
+        if r.stderr:
+            print(r.stderr.decode(errors='replace').rstrip(), file=sys.stderr)
+    return r.returncode
+
+
+def _read_config(cfg_file: Path) -> dict:
+    """Parse a key:value config file (same format as config.cfg)."""
+    cfg = {}
+    if not cfg_file.exists():
+        return cfg
+    for line in cfg_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if ':' in line:
+            k, _, v = line.partition(':')
+            cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def _gitlab_project_path(url: str) -> str:
+    """Extract namespace/project from an SSH or HTTPS GitLab URL."""
+    # SSH:   git@gitlab.com:namespace/project.git
+    m = re.match(r'^git@[^:]+:(.+?)(?:\.git)?$', url)
+    if m:
+        return m.group(1)
+    # HTTPS: https://gitlab.com/namespace/project[.git]
+    m = re.match(r'^https?://[^/]+/(.+?)(?:\.git)?$', url)
+    if m:
+        return m.group(1)
+    return url
+
+
+def _gitlab_upstream_url(gl: 'gitlab.Gitlab', centos_fork: str) -> str:
+    """Return the SSH URL of the upstream project that centos_fork is forked from."""
+    fork_project = gl.projects.get(_gitlab_project_path(centos_fork))
+    if fork_project.forked_from_project:
+        upstream = gl.projects.get(fork_project.forked_from_project['id'])
+        return upstream.ssh_url_to_repo
+    return ''
 
 
 def _git_config(key):
@@ -310,9 +555,28 @@ def _hostname():
     return r.stdout.strip()
 
 
+def _distgit_branch(release: str) -> str:
+    """Convert a release string (always rhel-X.Y.Z) to its dist-git branch name.
+
+    Reads distgit_version_parts from TOML per major:
+      3 (default) → keep X.Y.Z as-is   (e.g. rhel-9.6.0, rhel-8.10.0)
+      2           → strip trailing .0   (e.g. rhel-10.3.0 → rhel-10.3)
+    """
+    m = re.match(r'^rhel-(\d+)\.(\d+)\.(\d+)$', release)
+    if not m:
+        return release
+    major = int(m.group(1))
+    if cfg_version_parts(major) == 2:
+        return f'rhel-{m.group(1)}.{m.group(2)}'
+    return release
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def build_current_releases() -> list[str]:
+def build_ga_releases() -> list[str]:
+    """Return the GA (head) release per major plus rawhide.
+    GA = the latest active release for each major; these go through
+    centos-fork for centos_stream majors and get the base RPM Release number."""
     r = subprocess.run(['python3', str(SCRIPT_LOC / 'process.py'), '--get-ga'],
                        capture_output=True, text=True, cwd=SCRIPT_LOC)
     return ['rawhide'] + r.stdout.split()
@@ -365,12 +629,13 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
 
     verbose = not args.q
     out = PipelineOutput(human=args.human, title='build_combo.py')
-    out.set_columns(['Release', 'Major', 'State'])
+    out.set_columns(['Release', 'Branch', 'State'])
 
     meta = SCRIPT_LOC / 'meta'
 
     # ── collect releases — from meta lists or explicit CLI args ───────────────
-    rhel8, rhel9, rhel10, fedora = [], [], [], []
+    rhel_by_major: dict[int, list[str]] = {}   # major → [release, ...]
+    fedora: list[str] = []
     rhel_cacerts = fedora_cacerts = False
 
     release_sources = list(args.releases)
@@ -391,22 +656,39 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
             sys.exit(1)
 
     for rel in release_sources:
-        if rel.startswith('rhel-8'):
-            rhel8.append(rel); rhel_cacerts = True
-        elif rel.startswith('rhel-9'):
-            rhel9.append(rel); rhel_cacerts = True
-        elif rel.startswith('rhel-10'):
-            rhel10.append(rel); rhel_cacerts = True
+        if rel.startswith('rhel-'):
+            major = safe_int(release_get_major(rel))
+            if major > 0:
+                rhel_by_major.setdefault(major, []).append(rel)
+                rhel_cacerts = True
+            else:
+                print(f'Unknown release: {rel}', file=sys.stderr)
+                sys.exit(1)
         elif re.match(r'^f\d+$|^rawhide$', rel):
             fedora.append(rel); fedora_cacerts = True
         else:
             print(f'Unknown release: {rel}', file=sys.stderr)
             sys.exit(1)
 
-    current_releases = build_current_releases()
-    centos_fork = subprocess.run(
-        ['python3', str(SCRIPT_LOC / 'process.py'), '--getconfig', 'centos_fork'],
-        capture_output=True, text=True, cwd=SCRIPT_LOC).stdout.strip()
+    # Normalise to 3-part (rhel-X.Y.0) so the set matches the meta list format,
+    # which always uses X.Y.Z regardless of how the errata map keys are stored.
+    ga_releases = {
+        re.sub(r'^(rhel-\d+\.\d+)$', r'\1.0', r)
+        for r in build_ga_releases()
+    }
+    cfg = _read_config(SCRIPT_LOC / 'config.cfg')
+    centos_fork   = cfg.get('centos_fork', '')
+    glab_url_base = cfg.get('glab_url_base', 'https://gitlab.com/')
+    glab_api_key  = cfg.get('glab_api_key', '')
+
+    gl = None
+    if glab_api_key:
+        try:
+            gl = gitlab.Gitlab(url=glab_url_base, private_token=glab_api_key)
+            gl.auth()
+        except Exception as e:
+            print(f'WARNING: GitLab auth failed: {e}', file=sys.stderr)
+            gl = None
 
     packages = SCRIPT_LOC / 'packages'
     modified = SCRIPT_LOC / 'modified'
@@ -421,23 +703,15 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
         shutil.rmtree(d, ignore_errors=True)
     meta.mkdir(exist_ok=True)
     packages.mkdir()
+    (packages / 'rhel').mkdir()
     cacerts.mkdir()
 
+    modified.mkdir(parents=True)
     centos_list = []
-    if rhel8:
-        (modified / 'rhel8').mkdir(parents=True)
-        if uses_centos_stream(8):
-            centos_list.append('8')
-    if rhel9:
-        (modified / 'rhel9').mkdir(parents=True)
-        if uses_centos_stream(9):
-            centos_list.append('9')
-    if rhel10:
-        (modified / 'rhel10').mkdir(parents=True)
-        if uses_centos_stream(10):
-            centos_list.append('10')
+    for major in sorted(rhel_by_major.keys()):
+        if uses_centos_stream(major):
+            centos_list.append(str(major))
     if fedora:
-        (modified / 'fedora').mkdir(parents=True)
         (packages / 'fedora').mkdir()
 
     # ── fetch sources ─────────────────────────────────────────────────────────
@@ -451,12 +725,19 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
         for fname in ('nss.h', 'nssckbi.h', 'certdata.txt'):
             shutil.copy2(src / fname, cacerts / fname)
     else:
+        # -n on CLI takes precedence; then config.cfg 'nss' key; then HEAD
+        # Config may store just the minor (e.g. '126'); normalise to '3.126'
+        nss_ver = args.n or cfg.get('nss', '')
+        if nss_ver and '.' not in nss_ver:
+            nss_ver = f'3.{nss_ver}'
         if args.d:
             base_url = NSS_DEV_URL
-        elif args.n:
-            rel_tag = args.n.replace('.', '_')
+        elif nss_ver:
+            rel_tag = nss_ver.replace('.', '_')
             base_url = (f'https://hg.mozilla.org/projects/nss/raw-file/'
                         f'NSS_{rel_tag}_{args.t}/lib')
+            if not args.n:
+                print(f'>> using NSS {nss_ver} from config.cfg')
         else:
             base_url = NSS_BASE_URL
 
@@ -498,92 +779,170 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
             ckbi_version = f'{ckbi_version}_{mcs}'
 
     (meta / 'nssversion.txt').write_text(nss_version)
-    (meta / 'mcsversion.txt').write_text(
-        codesign_file.read_text().strip() if codesign_file.exists() else '')
+    codesign_tag = codesign_file.read_text().strip() if codesign_file.exists() else ''
+    (meta / 'mcsversion.txt').write_text(codesign_tag)
     (meta / 'ckbiversion.txt').write_text(ckbi_version)
+
+    # ── clone / update tests repo ─────────────────────────────────────────────
+    print('>> fetching ca-certificates tests')
+    tests_dir = packages / 'tests'
+    if not tests_dir.exists():
+        _run(['rhpkg', '-q', 'clone', 'tests/ca-certificates', 'tests'],
+             cwd=packages)
+    else:
+        _run(['git', 'pull'], cwd=tests_dir)
+
+    tests_state_file = meta / 'tests_state.txt'
+    if tests_dir.exists():
+        print('>> updating upstream-tag-crosscheck test')
+        update_upstream_tag_crosscheck(
+            tests_dir, nss_version,
+            codesign_tag if codesign_tag and codesign_tag != 'unknown' else '',
+            cacerts, rhel_by_major)
+        tests_state_file.write_text(
+            f'nss={nss_version}\nckbi={ckbi_version}\nstate=staged\n')
+    else:
+        print('WARNING: tests clone failed — skipping test update', file=sys.stderr)
 
     # ── clone dist-git ────────────────────────────────────────────────────────
     os.chdir(packages)
 
     if rhel_cacerts:
         print('>> fetching rhel ca-certificates')
-        _run(['rhpkg', '-q', 'clone', '-B', 'ca-certificates', 'rhel'])
+        # Clone into packages/rhel/ca-certificates/ (plain clone, no -B).
+        # The repo root at packages/rhel/ca-certificates/ is used to create
+        # branch worktrees at packages/rhel/<branch>/ via git worktree add.
+        rhel_repo = packages / 'rhel' / 'ca-certificates'
+        if not rhel_repo.exists():
+            r = subprocess.run(['rhpkg', '-q', 'clone', 'ca-certificates'],
+                               cwd=packages / 'rhel')
+            if r.returncode != 0 or not rhel_repo.exists():
+                print('ERROR: rhpkg clone failed — check VPN/Kerberos and retry.',
+                      file=sys.stderr)
+                sys.exit(r.returncode or 1)
+        _run(['git', 'fetch', '--all'], cwd=rhel_repo)
 
-        # ── create remote z-stream branches from major-main ───────────────────
-        # For z-stream releases on CentOS Stream majors, ensure the branch
-        # exists at origin, creating it from major-main if needed, then add
-        # a local worktree so the release dir exists alongside the others.
-        rhel_git = packages / 'rhel'
-        for rel in rhel9 + rhel10:
-            major = safe_int(release_get_major(rel))
-            if not uses_centos_stream(major):
-                continue
+        # Read remote branch names from local tracking refs (no network call needed
+        # after git fetch --all has populated them)
+        r = subprocess.run(['git', 'branch', '-r'],
+                           capture_output=True, text=True, cwd=rhel_repo)
+        remote_branches = {
+            line.strip().removeprefix('origin/')
+            for line in r.stdout.splitlines()
+            if line.strip().startswith('origin/') and '->' not in line
+        }
+        out.log(f'Found {len(remote_branches)} remote branches')
 
-            main_branch = f'rhel{major}-main'
-            worktree_path = rhel_git / rel
+        for rel in [r for rels in rhel_by_major.values() for r in rels]:
+            major         = safe_int(release_get_major(rel))
+            m_rel         = re.match(r'^rhel-\d+\.(\d+)', rel)
+            minor         = int(m_rel.group(1)) if m_rel else None
+
+            # dist_branch override: use the remote branch name as both
+            # the local branch and the worktree directory (e.g. rhel-8-main)
+            explicit = cfg_dist_branch(major, minor) if minor is not None else None
+            branch        = explicit if explicit else _distgit_branch(rel)
+            worktree_path = packages / 'rhel' / branch
 
             if worktree_path.is_dir():
+                out.log(f'  {branch}: worktree already exists')
                 continue
 
-            # Check if branch exists at origin
-            r = subprocess.run(
-                ['git', 'ls-remote', '--heads', 'origin', rel],
-                capture_output=True, text=True, cwd=rhel_git)
-            branch_exists = bool(r.stdout.strip())
+            if explicit:
+                out.log(f'  {branch}: using {explicit} directly (no dedicated branch)')
+                _run(['git', 'worktree', 'add', '-B', branch,
+                      str(worktree_path), f'origin/{explicit}'],
+                     cwd=rhel_repo)
+            elif branch not in remote_branches:
+                if uses_centos_stream(major):
+                    # For centos_stream majors, a missing branch means this is the
+                    # current GA — it flows through centos-fork and has no dedicated
+                    # dist-git branch.  Never create branches here; skip it.
+                    out.log(f'  {branch}: not at origin — GA via centos-fork, skipping')
+                    continue
+                # Non-centos_stream major (e.g. RHEL 8): create the z-stream branch
+                # from main.
+                mb = cfg_main_branch(major, minor)
+                print(f'>> creating remote branch {branch} from {mb}')
+                _run(['git', 'checkout', mb], cwd=rhel_repo)
+                _run(['git', 'push', 'origin', f'{mb}:{branch}'], cwd=rhel_repo)
+                _run(['git', 'fetch', 'origin', branch], cwd=rhel_repo)
+                _run(['git', 'worktree', 'add', '-B', branch,
+                      str(worktree_path), f'origin/{branch}'],
+                     cwd=rhel_repo)
+            else:
+                out.log(f'  {branch}: found at origin')
+                _run(['git', 'worktree', 'add', '-B', branch,
+                      str(worktree_path), f'origin/{branch}'],
+                     cwd=rhel_repo)
 
-            if not branch_exists:
-                print(f'>> creating remote branch {rel} from {main_branch}')
-                _run(['git', 'push', 'origin',
-                      f'refs/heads/{main_branch}:refs/heads/{rel}'],
-                     cwd=rhel_git)
+            out.log(f'  {branch}: worktree ready')
 
-            # Fetch and add local worktree
-            _run(['git', 'fetch', 'origin', rel], cwd=rhel_git)
-            _run(['git', 'worktree', 'add', str(worktree_path), rel],
-                 cwd=rhel_git)
-            out.log(f'  {rel}: worktree ready at packages/rhel/{rel}')
+        # reset the source folder branch
+        _run(['git', 'checkout', 'master'], cwd=rhel_repo)
 
         if centos_list:
-            print('>> fetching centos ca-certificates')
-            _run(['centpkg', '-q', 'clone', '-B', 'ca-certificates', 'centos'])
-            # Get upstream URL from the centos git repo root (before moving worktrees)
-            r = subprocess.run(['git', 'config', '--get', 'remote.origin.url'],
-                               capture_output=True, text=True,
-                               cwd=packages / 'centos')
-            ca_upstream = r.stdout.strip()
+            centos_pkg = packages / 'centos'
+            if not centos_pkg.exists():
+                print('>> fetching centos ca-certificates')
+                rc = subprocess.run(['centpkg', '-q', 'clone', '-B',
+                                     'ca-certificates', 'centos'])
+                if rc.returncode != 0 or not centos_pkg.exists():
+                    print('ERROR: centpkg clone failed — check VPN/Kerberos and retry.',
+                          file=sys.stderr)
+                    sys.exit(rc.returncode or 1)
+            # Resolve upstream URL from GitLab fork metadata once
+            ca_upstream = ''
+            if gl and centos_fork:
+                ca_upstream = _gitlab_upstream_url(gl, centos_fork)
+            if not ca_upstream:
+                print('ERROR: could not determine upstream URL from GitLab — '
+                      'check gitlab_api_key and centos_fork in config.cfg',
+                      file=sys.stderr)
+                sys.exit(1)
 
             fork_base = packages / 'centos-fork'
-            fork_base.mkdir(parents=True)
+            fork_base.mkdir(parents=True, exist_ok=True)
             for version in centos_list:
                 branch = f'c{version}s'
-                print(f'Cloning {branch} from {centos_fork}')
-                _run(['git', 'clone',
-                      '-c', 'url.git@gitlab.com:.insteadOf=https://gitlab.com/',
-                      centos_fork, '-b', branch, branch],
-                     cwd=fork_base)
                 branch_dir = fork_base / branch
-                if not branch_dir.is_dir():
-                    print(f'Folder {branch} not found')
-                    continue
-                _run(['git', 'remote', 'add', 'upstream', ca_upstream], cwd=branch_dir)
+                if not branch_dir.exists():
+                    print(f'Cloning {branch} from {centos_fork}')
+                    rc = subprocess.run(
+                        ['git', 'clone',
+                         '-c', 'url.git@gitlab.com:.insteadOf=https://gitlab.com/',
+                         centos_fork, '-b', branch, branch],
+                        cwd=fork_base)
+                    if rc.returncode != 0 or not branch_dir.exists():
+                        print(f'ERROR: git clone of centos-fork/{branch} failed.',
+                              file=sys.stderr)
+                        sys.exit(rc.returncode or 1)
+                    _run(['git', 'remote', 'add', 'upstream', ca_upstream],
+                         cwd=branch_dir)
+                else:
+                    out.log(f'  centos-fork/{branch}: already cloned')
+                # Always sync with upstream — every run needs the latest content
                 _run(['git', 'fetch', 'upstream'], cwd=branch_dir)
                 _run(['git', 'pull', 'upstream', branch], cwd=branch_dir)
                 _run(['git', 'push', 'origin', branch], cwd=branch_dir)
-                _run(['git', 'checkout', '-b', branch, f'origin/{branch}'],
-                     cwd=branch_dir)
-                _run(['git', 'branch', '-u', f'upstream/{branch}'], cwd=branch_dir)
 
     if fedora_cacerts:
-        print('>> fetching fedora ca-certificates')
-        _run(['fedpkg', '-q', 'clone', '-B', 'ca-certificates'],
-             cwd=packages / 'fedora')
+        fedora_clone_root = packages / 'fedora' / 'ca-certificates'
+        if not fedora_clone_root.exists():
+            print('>> fetching fedora ca-certificates')
+            rc = subprocess.run(['fedpkg', '-q', 'clone', '-B', 'ca-certificates'],
+                                cwd=packages / 'fedora')
+            if rc.returncode != 0 or not fedora_clone_root.exists():
+                print('ERROR: fedpkg clone failed — check VPN/Kerberos and retry.',
+                      file=sys.stderr)
+                sys.exit(rc.returncode or 1)
         # Move worktrees from packages/fedora/ca-certificates/<rel> → packages/fedora/<rel>
-        fedora_ca_git = packages / 'fedora'
+        fedora_base = packages / 'fedora'
         for rel in fedora:
-            src = fedora_ca_git / rel
+            src = fedora_base / rel
             if src.is_dir():
                 _run(['git', 'worktree', 'move', rel, str(packages / 'fedora' / rel)],
-                     cwd=fedora_ca_git)
+                     cwd=fedora_base)
 
     # ── modify certdata ───────────────────────────────────────────────────────
     os.chdir(SCRIPT_LOC)
@@ -594,17 +953,12 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
     print('*' + ' Modifying certdata.txt for releases '.center(64) + '*')
     print('*' * 66)
 
-    for maj, dest in [('fedora', modified / 'fedora'),
-                      ('rhel10', modified / 'rhel10'),
-                      ('rhel9',  modified / 'rhel9'),
-                      ('rhel8',  modified / 'rhel8')]:
-        rel_list = {'fedora': fedora, 'rhel10': rhel10,
-                    'rhel9': rhel9, 'rhel8': rhel8}[maj]
-        if rel_list:
-            print(f' - Creating {maj.upper()} certdata.txt')
-            _run(['python3', converter,
-                  '--input', src_certdata,
-                  '--output', str(dest / 'certdata.txt')])
+    # certdata is identical across all RHEL majors and Fedora — generate once
+    modified_certdata = modified / 'certdata.txt'
+    print(' - Creating certdata.txt')
+    _run(['python3', converter,
+          '--input', src_certdata,
+          '--output', str(modified_certdata)])
 
     # ── update packages ───────────────────────────────────────────────────────
     print('*' * 66)
@@ -628,7 +982,7 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
                 nss_version, ckbi_version,
                 scratch / rel.replace('/', '_'),
                 rel, rz, rb,
-                current_releases, verbose)
+                ga_releases, verbose)
             errors += rc
             set_list_state(list_file, rel, 'staged')
             out.update_row(rel, [rel, major, 'staged' if rc == 0 else 'error'])
@@ -636,44 +990,62 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
     with out:
         out.set_subtitle(f'NSS {nss_version} · CKBI {ckbi_version}')
 
-        _update(rhel8, modified / 'rhel8' / 'certdata.txt',
-                lambda r: packages / 'rhel' / r, '80.0', '81',
-                rhel_list_file, 'rhel-8')
-
-        for rel in rhel9:
-            out.log(f'**** ca-certificates {rel} ****')
-            out.update_row(rel, [rel, 'rhel-9', 'updating…'])
-            if uses_centos_stream(9) and rel in current_releases:
-                pkg = packages / 'centos-fork' / 'c9s'
-            else:
-                pkg = packages / 'rhel' / rel
+        # Generic loop over all RHEL majors — no hardcoded version numbers
+        # centos-fork (GA releases) — driven by centos_list, independent of
+        # whether the GA release appears in rhel_by_major.
+        # Branch = cXs (the centos fork branch)
+        for version in centos_list:
+            branch = f'c{version}s'
+            major  = int(version)
+            pkg    = packages / 'centos-fork' / branch
+            rz, rb = restart_releases(major)
+            # Find the GA release name for display (the one with no rhel worktree)
+            ga_rel = next(
+                (r for r in rhel_by_major.get(major, [])
+                 if not (packages / 'rhel' / _distgit_branch(r)).is_dir()),
+                branch)
+            out.log(f'**** ca-certificates {ga_rel} via centos-fork/{branch} ****')
+            out.update_row(ga_rel, [ga_rel, branch, 'updating…'])
             rc = cacertificates_update(
-                pkg, modified / 'rhel9' / 'certdata.txt',
+                pkg, modified_certdata,
                 nssckbi, nss_version, ckbi_version,
-                scratch / rel.replace('/', '_'),
-                rel, '90.0', '91', current_releases, verbose)
+                scratch / branch,
+                ga_rel, rz, rb, ga_releases, verbose)
             errors += rc
-            set_list_state(rhel_list_file, rel, 'staged')
-            out.update_row(rel, [rel, 'rhel-9', 'staged' if rc == 0 else 'error'])
+            set_list_state(rhel_list_file, ga_rel, 'staged')
+            set_list_branch(rhel_list_file, ga_rel, branch)   # c9s / c10s
+            out.update_row(ga_rel, [ga_rel, branch,
+                                    'staged' if rc == 0 else 'error'])
 
-        for rel in rhel10:
-            out.log(f'**** ca-certificates {rel} ****')
-            out.update_row(rel, [rel, 'rhel-10', 'updating…'])
-            if uses_centos_stream(10) and rel in current_releases:
-                pkg = packages / 'centos-fork' / 'c10s'
-            else:
-                pkg = packages / 'rhel' / rel
-            rc = cacertificates_update(
-                pkg, modified / 'rhel10' / 'certdata.txt',
-                nssckbi, nss_version, ckbi_version,
-                scratch / rel.replace('/', '_'),
-                rel, '100.0', '101', current_releases, verbose)
-            errors += rc
-            set_list_state(rhel_list_file, rel, 'staged')
-            out.update_row(rel, [rel, 'rhel-10', 'staged' if rc == 0 else 'error'])
+        # RHEL z-stream worktrees
+        for major, releases in sorted(rhel_by_major.items()):
+            rz, rb = restart_releases(major)
+            for rel in releases:
+                _m = re.match(r'^rhel-(\d+)\.(\d+)', rel)
+                _minor = int(_m.group(2)) if _m else None
+                _explicit = cfg_dist_branch(major, _minor) if _minor is not None else None
+                # Worktree dir = dist_branch name if overridden, else _distgit_branch
+                dist_branch_name = _explicit or _distgit_branch(rel)
+                rhel_worktree = packages / 'rhel' / dist_branch_name
+                if not rhel_worktree.is_dir():
+                    out.log(f'  {rel}: no rhel worktree (GA via centos-fork) — skipping')
+                    continue
+                out.log(f'**** ca-certificates {rel} (branch={dist_branch_name}) ****')
+                out.update_row(rel, [rel, dist_branch_name, 'updating…'])
+                rc = cacertificates_update(
+                    rhel_worktree, modified_certdata,
+                    nssckbi, nss_version, ckbi_version,
+                    scratch / rel.replace('/', '_'),
+                    rel, rz, rb, ga_releases, verbose)
+                errors += rc
+                set_list_state(rhel_list_file, rel, 'staged')
+                set_list_branch(rhel_list_file, rel, dist_branch_name)
+                out.update_row(rel, [rel, dist_branch_name,
+                                     'staged' if rc == 0 else 'error'])
 
-        _update(fedora, modified / 'fedora' / 'certdata.txt',
-                lambda r: packages / 'fedora' / r, '1.0', '2',
+        fz, fb = fedora_restart_releases()
+        _update(fedora, modified_certdata,
+                lambda r: packages / 'fedora' / r, fz, fb,
                 fedora_list_file, 'fedora')
 
         out.log(f'Finished updates for ca-certificates {ckbi_version} '
@@ -681,8 +1053,9 @@ fedpkg (for Fedora), kinit (Kerberos ticket for dist-git operations).
 
     os.chdir(SCRIPT_LOC)
     print('The following directories are ready for checkin:')
-    for checkin in packages.rglob('checkin.log'):
-        print(str(checkin.parent))
+    for checkin in sorted(packages.rglob('checkin.log')):
+        rel_path = checkin.parent.relative_to(packages)
+        print(f'  {rel_path}  ({checkin.parent})')
 
 
 if __name__ == '__main__':

@@ -136,13 +136,13 @@ class TestSetListStateP:
 
     def test_updates_state_field(self, tmp_path):
         f = self._make(tmp_path,
-            'rhel-9.6.0:ca-certificates:RHEL-100:0::planned::\n')
+            'rhel-9.6.0::RHEL-100:0::planned::\n')
         bc.set_list_state(f, 'rhel-9.6.0', 'staged')
         assert 'staged' in f.read_text()
 
     def test_preserves_other_fields(self, tmp_path):
         f = self._make(tmp_path,
-            'rhel-9.6.0:ca-certificates:RHEL-100:42:some-nvr:planned:mr1:up1:\n')
+            'rhel-9.6.0::RHEL-100:42:some-nvr:planned:mr1:up1:\n')
         bc.set_list_state(f, 'rhel-9.6.0', 'staged')
         text = f.read_text()
         for token in ('RHEL-100', '42', 'some-nvr', 'mr1', 'staged'):
@@ -150,8 +150,8 @@ class TestSetListStateP:
 
     def test_only_updates_matching_release(self, tmp_path):
         f = self._make(tmp_path,
-            'rhel-9.6.0:ca-certificates:B1:0::planned::\n'
-            'rhel-9.4.0:ca-certificates:B2:0::planned::\n')
+            'rhel-9.6.0::B1:0::planned::\n'
+            'rhel-9.4.0::B2:0::planned::\n')
         bc.set_list_state(f, 'rhel-9.6.0', 'staged')
         lines = [l for l in f.read_text().splitlines() if l]
         assert 'staged'  in lines[0]
@@ -159,19 +159,19 @@ class TestSetListStateP:
 
     def test_warns_on_missing_release(self, tmp_path, capsys):
         f = self._make(tmp_path,
-            'rhel-9.6.0:ca-certificates:B1:0::planned::\n')
+            'rhel-9.6.0::B1:0::planned::\n')
         bc.set_list_state(f, 'rhel-8.10.0', 'staged')
         assert 'WARNING' in capsys.readouterr().err
 
     def test_does_not_corrupt_on_missing(self, tmp_path):
         f = self._make(tmp_path,
-            'rhel-9.6.0:ca-certificates:B1:0::planned::\n')
+            'rhel-9.6.0::B1:0::planned::\n')
         bc.set_list_state(f, 'rhel-8.10.0', 'staged')
         assert 'rhel-9.6.0' in f.read_text()
 
     def test_crypto_key_field_preserved(self, tmp_path):
         f = self._make(tmp_path,
-            'rhel-10.3:ca-certificates:RHEL-212568:0::planned:::CRYPTO-23449\n')
+            'rhel-10.3::RHEL-212568:0::planned:::CRYPTO-23449\n')
         bc.set_list_state(f, 'rhel-10.3', 'staged')
         text = f.read_text()
         assert 'CRYPTO-23449' in text
@@ -324,11 +324,13 @@ class TestCacertificatesUpdateP:
                 git_log.append(cmd)
                 if stdout:
                     Path(stdout).write_text('')
+                return 0
             elif 'check_certs' in str(cmd[0]):
                 if stdout:
                     Path(stdout).write_text('Added: Test CA\nRemoved: Old CA\n')
+                return 0
             else:
-                old_run(cmd, cwd=cwd, stdout=stdout)
+                return old_run(cmd, cwd=cwd, stdout=stdout)
         bc._run = stub_run
         try:
             rc = bc.cacertificates_update(
@@ -358,14 +360,14 @@ class TestCacertificatesUpdateP:
                                                            certdata_changed=False)
         rc, _ = self._run(tmp_path, pkg_dir, certdata, nssckbi, scratch)
         assert rc == 0
-        assert 'already up to date' in capsys.readouterr().out
+        assert 'unchanged' in capsys.readouterr().out
 
     def test_returns_0_and_updates_when_certdata_changed(self, tmp_path, capsys):
         pkg_dir, certdata, nssckbi, scratch = self._setup(tmp_path,
                                                            certdata_changed=True)
         rc, _ = self._run(tmp_path, pkg_dir, certdata, nssckbi, scratch)
         assert rc == 0
-        assert 'already up to date' not in capsys.readouterr().out
+        assert 'unchanged' not in capsys.readouterr().out
 
     def test_spec_file_updated_after_run(self, tmp_path):
         pkg_dir, certdata, nssckbi, scratch = self._setup(tmp_path, True)
@@ -408,3 +410,34 @@ class TestCacertificatesUpdateP:
         pkg_dir, certdata, nssckbi, scratch = self._setup(tmp_path, True)
         self._run(tmp_path, pkg_dir, certdata, nssckbi, scratch)
         assert scratch.exists()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _distgit_branch — TOML-driven branch name conversion
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestVersionPartsBranch:
+    """_distgit_branch converts release strings to dist-git branch names.
+
+    RHEL 8/9 use distgit_version_parts=3 → keep X.Y.Z.
+    RHEL 10+  use distgit_version_parts=2 (default) → strip .0 → X.Y.
+    """
+
+    def test_rhel8_keeps_three_parts(self):
+        assert bc._distgit_branch('rhel-8.10.0') == 'rhel-8.10.0'
+
+    def test_rhel9_keeps_three_parts(self):
+        assert bc._distgit_branch('rhel-9.6.0') == 'rhel-9.6.0'
+
+    def test_rhel10_strips_zero(self):
+        assert bc._distgit_branch('rhel-10.3.0') == 'rhel-10.3'
+
+    def test_rhel10_minor_zero_strips(self):
+        assert bc._distgit_branch('rhel-10.0.0') == 'rhel-10.0'
+
+    def test_non_rhel_passthrough(self):
+        assert bc._distgit_branch('rawhide') == 'rawhide'
+
+    def test_two_part_passthrough(self):
+        # 2-part inputs (shouldn't normally occur) pass through unchanged
+        assert bc._distgit_branch('rhel-9.6') == 'rhel-9.6'
