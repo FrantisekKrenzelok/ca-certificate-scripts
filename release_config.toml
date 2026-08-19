@@ -1,11 +1,44 @@
 # Per-RHEL-major release configuration.
-# Add a new [<major>] section for each new major RHEL release.
+# Inheritance model:
+#   [<major>]                  — defaults for the entire major version
+#   [<major>.releases."<minor>"] — overrides for a specific X.Y release
+#
+# version_parts controls the version format (dist-git branch, Jira fixVersion, release):
+#   3 → X.Y.Z  (e.g. rhel-9.6.0)   — set explicitly for RHEL 8 and 9
+#   2 → X.Y    (e.g. rhel-10.3)    — default for new majors
+#
+# jira_keep_zero_below_minor = N: within a version_parts=3 major, keep the trailing
+#   .0 in Jira fixVersion for minor < N (e.g. rhel-8.8.0.z), strip for minor >= N.
+#
+# dist_branch in a per-release override: this release HAS no dedicated dist-git
+#   branch — use the named branch directly (no new branch creation).
+#
+# restart_release_z / restart_release_base default to "1" — set here only if
+# a major needs a different reset value.
 
 [8]
-centos_stream = false   # RHEL 8 ships directly via Brew, no CentOS Stream gate
+centos_stream          = true           # 8.10 pushes via c8s → distrobaker → rhel-8-main
+centos_branch          = "c8s"          # centos-fork branch for c8s
+zstream_clone          = false          # no Jira clone requests for RHEL 8
+main_branch            = "rhel-8-main"  # dist-git branch (8.x z-streams + 8.10 post-distrobaker)
+jira_keep_zero_below_minor = 10        # keep .0 in fixVersion for minor < 10
+version_parts          = 3              # version format is X.Y.Z (branch, fixVersion, release)
+
 
 [9]
-centos_stream = true    # RHEL 9 GA goes through CentOS Stream (c9s fork)
+centos_stream          = true
+zstream_clone          = true           # RHEL 9 GA bug is cloned to all active z-streams
+main_branch            = "rhel-9-main"
+centos_branch          = "c9s"
+jira_keep_zero_below_minor = 3         # keep .0 for 9.0–9.2, strip for 9.4+
+version_parts          = 3              # version format is X.Y.Z (branch, fixVersion, release)
 
 [10]
-centos_stream = true    # RHEL 10 GA goes through CentOS Stream (c10s fork)
+centos_stream          = true
+zstream_clone          = true
+main_branch            = "rhel-10-main"
+centos_branch          = "c10s"
+# version_parts defaults to 2 — X.Y format for branch, fixVersion, release (e.g. rhel-10.3)
+
+[fedora]
+# restart_release defaults to 1
