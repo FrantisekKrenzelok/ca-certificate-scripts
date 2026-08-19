@@ -40,11 +40,11 @@ class TestJiraFixversion:
         assert iss.jira_fixversion('rhel-9.6.0')  == 'rhel-9.6'
         assert iss.jira_fixversion('rhel-9.9.0')  == 'rhel-9.9'
 
-    # RHEL 10 (already 2-part in errata map): no change
-    def test_rhel10_unchanged(self):
-        assert iss.jira_fixversion('rhel-10.0')   == 'rhel-10.0'
-        assert iss.jira_fixversion('rhel-10.2')   == 'rhel-10.2'
-        assert iss.jira_fixversion('rhel-10.3')   == 'rhel-10.3'
+    # RHEL 10 (version_parts=2 default): 3-part input → 2-part output
+    def test_rhel10_strips_patch_component(self):
+        assert iss.jira_fixversion('rhel-10.0.0') == 'rhel-10.0'
+        assert iss.jira_fixversion('rhel-10.2.0') == 'rhel-10.2'
+        assert iss.jira_fixversion('rhel-10.3.0') == 'rhel-10.3'
 
     # Non-matching format: returned as-is
     def test_no_match_returned_as_is(self):

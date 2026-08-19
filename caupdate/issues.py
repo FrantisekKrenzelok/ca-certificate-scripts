@@ -138,24 +138,27 @@ def _adf(text):
 
 def jira_fixversion(release):
     """
-    Convert errata-map release name to Jira fixVersion name.
+    Convert an errata-map release string (always rhel-X.Y.Z) to a Jira fixVersion.
 
-    Older RHEL releases keep the trailing .0 in Jira fixVersions:
-      - RHEL 8 minor < 10  → rhel-8.4.0  (not rhel-8.4)
-      - RHEL 9 minor <= 2  → rhel-9.2.0  (not rhel-9.2)
-    Newer releases strip it:
-      - RHEL 8.10           → rhel-8.10   (exception)
-      - RHEL 9.4+           → rhel-9.4
-      - RHEL 10+            → rhel-10.0, rhel-10.2 (already 2-part in errata map)
+    version_parts=2 majors (RHEL 10+, default):
+      rhel-X.Y.Z → rhel-X.Y  (always strip .Z)
+
+    version_parts=3 majors (RHEL 8/9, explicit):
+      Uses jira_keep_zero_below_minor to decide whether to keep or strip the .0:
+        minor < threshold → keep   (e.g. rhel-8.8.0.z, rhel-9.2.0.z)
+        minor >= threshold → strip (e.g. rhel-9.6)
     """
     import re
-    m = re.match(r'^rhel-(\d+)\.(\d+)\.0$', release)
+    from caupdate.release_config import version_parts as _vp, jira_keep_zero
+    m = re.match(r'^rhel-(\d+)\.(\d+)\.(\d+)$', release)
     if not m:
-        return release  # already 2-part (e.g. rhel-10.2) or no trailing .0
+        return release
     major, minor = int(m.group(1)), int(m.group(2))
-    if (major == 8 and minor < 10) or (major == 9 and minor <= 2):
-        return release  # keep the .0: rhel-8.4.0, rhel-8.6.0, rhel-9.2.0
-    return f'rhel-{major}.{minor}'  # strip the .0: rhel-8.10, rhel-9.4, etc.
+    if _vp(major) == 2:
+        return f'rhel-{major}.{minor}'  # X.Y format for new-style majors
+    if jira_keep_zero(major, minor):
+        return release  # keep the .0 for old z-streams (e.g. rhel-8.8.0)
+    return f'rhel-{major}.{minor}'  # strip the .0 for current stream
 
 def issue_create(session, release, version, nss_version, firefox_version,
                  mcs_version, packages, zstream, year):
@@ -227,6 +230,37 @@ def has_clone_links(session, issue_key):
     except Exception as e:
         print(f'  WARNING: could not check clone links for {issue_key}: {e}')
     return False
+
+def issue_update_versions(session, issue_or_key, version, nss_version,
+                          firefox_version, mcs_version, release, zstream, year):
+    """Update summary and description of an existing issue with actual build versions.
+
+    Called from process.py after build_combo.py has determined the real NSS/CKBI
+    versions, which may differ from what plan.py used at planning time.
+    """
+    key = issue_or_key if isinstance(issue_or_key, str) else issue_or_key.get('key', str(issue_or_key))
+    fv  = jira_fixversion(release)
+    if zstream:
+        fv += '.z'
+    payload = {
+        'fields': {
+            'summary':     bug_summary % (year, version, nss_version,
+                                          firefox_version, mcs_version, fv),
+            'description': _adf(bug_description % (version, nss_version, mcs_version)),
+        }
+    }
+    try:
+        r = requests.put(f'{session.url}/rest/api/3/issue/{key}',
+                         json=payload, headers=session._headers(), timeout=30)
+        if r.status_code == 204:
+            print(f'  {key}: summary/description updated with NSS {nss_version} / {version}')
+            return True
+        print(f'  WARNING: version update on {key} returned {r.status_code}: {r.text}')
+        return False
+    except requests.RequestException as e:
+        print(f'  WARNING: version update on {key} failed: {e}')
+        return False
+
 
 def issue_request_clone(session, issue_or_key, dry_run=False):
     """Request 'Clone for all active z-streams' on a GA issue via customfield_10941."""
