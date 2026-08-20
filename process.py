@@ -1449,6 +1449,8 @@ def _log(release, msg):
         print(line)
 
 
+_CRYPTO_DEV_STATE_ORDER = ['Backlog', 'In Progress', 'Closed']
+
 def _advance_crypto_dev(entry, release, target_state):
     """Transition the [DEV] CRYPTO child issue to target_state if not already there.
 
@@ -1466,6 +1468,11 @@ def _advance_crypto_dev(entry, release, target_state):
         if raw:
             current = raw.get('fields', {}).get('status', {}).get('name', '')
         if current == target_state:
+            return
+        current_rank = _CRYPTO_DEV_STATE_ORDER.index(current) if current in _CRYPTO_DEV_STATE_ORDER else -1
+        target_rank  = _CRYPTO_DEV_STATE_ORDER.index(target_state) if target_state in _CRYPTO_DEV_STATE_ORDER else -1
+        if current_rank >= target_rank:
+            _log(release, f'[DEV] {key}: already {current}, skipping transition to {target_state}')
             return
         issue_change_state(Jira, key, target_state)
         _log(release, f'[DEV] {key}: {current} → {target_state}')
